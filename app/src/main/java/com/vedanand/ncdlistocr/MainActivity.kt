@@ -859,10 +859,10 @@ fun extractEntriesFromOcr(cells: List<OcrCell>): List<Entry> {
 
     // Prefer the visual column containing mostly 2-digit numbers. Long phone-number
     // columns and M/F columns are intentionally never considered age columns.
-    val ageColumn = columns.indices.maxByOrNull { index ->
-        columns[index].sumOf { cell ->
+    val ageColumn = columns.indices.maxByOrNull { index: Int ->
+        columns[index].fold(0) { score: Int, cell: OcrCell ->
             val value = ageValue(cell.text)
-            when {
+            score + when {
                 value == null -> 0
                 value.length == 2 -> 3
                 else -> 1
