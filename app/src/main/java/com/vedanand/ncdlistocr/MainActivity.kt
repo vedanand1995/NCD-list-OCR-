@@ -608,8 +608,8 @@ fun TerminalApp() {
 
                 Spacer(Modifier.height(6.dp))
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(5.dp)) {
-                    TermButton("COPY (" + entries.size + ")", Modifier.weight(1f), fontSize = 10.sp, enabled = entries.isNotEmpty()) {
-                        val text = entries.joinToString("\n") { (it.name + " " + it.age).trim() }
+                    TermButton("COPY LIST (" + entries.size + ")", Modifier.weight(1f), fontSize = 10.sp, enabled = entries.isNotEmpty()) {
+                        val text = formatNameAgeList(entries)
                         clipboard.setText(AnnotatedString(text))
                         status = "$ COPIED " + entries.size + " LINES TO CLIPBOARD"
                     }
@@ -656,9 +656,8 @@ fun TerminalApp() {
                                 }
                                 Spacer(Modifier.height(8.dp))
                                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                    TermButton("COPY ALL", Modifier.weight(1f), fontSize = 10.sp) {
-                                        val text = entries.joinToString("\n") { "${it.name}\t${it.age}" }
-                                        clipboard.setText(AnnotatedString(text)); status = "$ COPIED TABLE"
+                                    TermButton("COPY LIST", Modifier.weight(1f), fontSize = 10.sp) {
+                                        clipboard.setText(AnnotatedString(formatNameAgeList(entries))); status = "$ COPIED NAME/AGE LIST"
                                     }
                                     TermButton("EXPORT XLSX", Modifier.weight(1f), fontSize = 10.sp) {
                                         xlsxSaver.launch("NCD-List-${SimpleDateFormat("yyyyMMdd_HHmm", Locale.US).format(Date())}.xlsx")
@@ -900,7 +899,12 @@ fun extractEntriesFromOcr(cells: List<OcrCell>): List<Entry> {
         val isHeader = normalized.contains("name") && normalized.contains("age") ||
             normalized.trim() in setOf("name", "age", "naam", "umar", "vay")
         if (isHeader || name.isBlank() || age == null) null else Entry(name, age)
-    }.distinctBy { (it.name.lowercase(Locale.ROOT) to it.age) }
+    }
+}
+
+/** Format only the requested fields, keeping each person's full name on one line. */
+fun formatNameAgeList(entries: List<Entry>): String = entries.joinToString("\n") {
+    "${it.name.trim()} ${it.age.trim()}".trim()
 }
 
 /** Cluster OCR cells into visual columns (sorted left to right). */
