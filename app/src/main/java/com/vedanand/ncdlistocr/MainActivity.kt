@@ -7,6 +7,8 @@ import android.graphics.Matrix
 import android.graphics.Rect
 import android.net.Uri
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.util.Xml
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -60,6 +62,7 @@ import androidx.exifinterface.media.ExifInterface
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.text.TextRecognition
 import com.google.mlkit.vision.text.latin.TextRecognizerOptions
+import com.google.android.gms.tasks.Tasks
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -117,27 +120,56 @@ fun TerminalApp() {
 
     fun ocrBitmap(bmp: Bitmap) {
         loading = true
-        val image = InputImage.fromBitmap(bmp, 0)
-        val recognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
-        recognizer.process(image)
-            .addOnSuccessListener { visionText ->
-                val list = mutableListOf<OcrCell>()
-                visionText.textBlocks.forEachIndexed { bi, block ->
-                    block.lines.forEachIndexed { li, line ->
-                        line.boundingBox?.let { list.add(OcrCell(line.text, it, bi, li)) }
+        status = "$ OFFLINE OCR: checking photo rotation..."
+        Thread({
+            val recognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
+            var bestBitmap = bmp
+            var bestCells = emptyList<OcrCell>()
+            var bestScore = Int.MIN_VALUE
+            try {
+                for (degrees in listOf(0f, 90f, 180f, 270f)) {
+                    val candidate = if (degrees == 0f) bmp else rotateBitmap(bmp, degrees)
+                    val candidateCells = try {
+                        val visionText = Tasks.await(recognizer.process(InputImage.fromBitmap(candidate, 0)))
+                        buildList {
+                            visionText.textBlocks.forEachIndexed { bi, block ->
+                                block.lines.forEachIndexed { li, line ->
+                                    line.boundingBox?.let { add(OcrCell(line.text, it, bi, li)) }
+                                }
+                            }
+                        }
+                    } catch (_: Exception) {
+                        emptyList()
+                    }
+                    val extractedCount = extractEntriesFromOcr(candidateCells).size
+                    val readableLines = candidateCells.count { cell ->
+                        cell.text.any { it.isLetter() } && !cell.text.contains("ICDS", ignoreCase = true)
+                    }
+                    val score = extractedCount * 10000 + readableLines * 10 + candidateCells.size
+                    if (score > bestScore) {
+                        if (bestBitmap !== bmp && bestBitmap !== candidate) bestBitmap.recycle()
+                        bestBitmap = candidate
+                        bestCells = candidateCells
+                        bestScore = score
+                    } else if (candidate !== bmp && candidate !== bestBitmap) {
+                        candidate.recycle()
                     }
                 }
-                cells = list
+            } catch (_: Exception) {
+                // Keep the best result already obtained; all inference is on-device.
+            } finally {
+                recognizer.close()
+            }
+            Handler(Looper.getMainLooper()).post {
+                bitmap = bestBitmap
+                cells = bestCells
                 selected = emptySet()
-                entries = extractEntriesFromOcr(list)
+                entries = extractEntriesFromOcr(bestCells)
                 loading = false
                 showGrid = true
-                status = "$ OCR DONE: " + list.size + " CELLS; SCANNED " + entries.size + " NAME/AGE ROWS. Review/edit below"
+                status = "$ OFFLINE OCR DONE: " + bestCells.size + " CELLS; " + entries.size + " NAME/AGE ROWS. Rotation checked"
             }
-            .addOnFailureListener {
-                cells = emptyList(); loading = false
-                status = "$ OCR FAILED"
-            }
+        }, "offline-ocr-rotation-check").start()
     }
 
     // --- Gallery picker ---
@@ -778,7 +810,8 @@ fun loadBitmapWithExif(context: Context, uri: Uri): Bitmap? {
     boundsStream.use { BitmapFactory.decodeStream(it, null, bounds) }
     if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
     val maxDim = maxOf(bounds.outWidth, bounds.outHeight)
-    val sample = maxOf(1, maxDim / 2048)
+    var sample = 1
+    while (maxDim / sample > 2048) sample *= 2
     val opts = BitmapFactory.Options().apply { inSampleSize = sample }
     val bmp = resolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, opts) }
         ?: return null
@@ -820,10 +853,13 @@ fun gridRows(cells: List<OcrCell>): List<List<OcrCell>> {
     val rows = mutableListOf<MutableList<OcrCell>>()
     sorted.forEach { c ->
         val cy = (c.rect.top + c.rect.bottom) / 2f
-        val row = rows.lastOrNull { r ->
-            val last = r.last()
-            val rc = (last.rect.top + last.rect.bottom) / 2f
-            Math.abs(cy - rc) < 0.7f * last.rect.height().coerceAtLeast(1)
+        val row = rows.minByOrNull { r ->
+            val rc = r.map { (it.rect.top + it.rect.bottom) / 2f }.average().toFloat()
+            Math.abs(cy - rc)
+        }?.takeIf { r ->
+            val rc = r.map { (it.rect.top + it.rect.bottom) / 2f }.average().toFloat()
+            val typicalHeight = r.map { it.rect.height() }.sorted().getOrNull(r.size / 2) ?: c.rect.height()
+            Math.abs(cy - rc) < 0.65f * maxOf(c.rect.height(), typicalHeight).coerceAtLeast(1)
         }
         if (row != null) row.add(c) else rows.add(mutableListOf(c))
     }
@@ -851,8 +887,10 @@ fun extractEntriesFromOcr(cells: List<OcrCell>): List<Entry> {
     }
     fun ageValue(text: String): String? {
         val value = text.trim()
-        if (value.replace(Regex("\\D"), "").length >= 10) return null
-        val number = value.toIntOrNull() ?: return null
+        val digits = value.replace(Regex("\\D"), "")
+        if (digits.length >= 10) return null
+        val token = Regex("(?<!\\d)\\d{1,2}(?!\\d)").find(value)?.value ?: return null
+        val number = token.toIntOrNull() ?: return null
         return number.takeIf { it in 1..99 }?.toString()
     }
 
@@ -879,7 +917,7 @@ fun extractEntriesFromOcr(cells: List<OcrCell>): List<Entry> {
             columns[index].any { !isNoise(it.text) && parseCell(it.text).name.isNotBlank() }
     }
 
-    return gridRows(cells).mapNotNull { row ->
+    val rowAligned = gridRows(cells).mapNotNull { row ->
         val rowByColumn = row.groupBy { columnOf[it.blockIndex to it.lineIndex] }
         val nameText = nameColumn?.let { index ->
             rowByColumn[index]?.sortedBy { it.rect.left }?.joinToString(" ") { it.text.trim() }
@@ -900,6 +938,24 @@ fun extractEntriesFromOcr(cells: List<OcrCell>): List<Entry> {
             normalized.trim() in setOf("name", "age", "naam", "umar", "vay")
         if (isHeader || name.isBlank() || age == null) null else Entry(name, age)
     }
+    // Phone photos can skew the table so the same printed row has different Y
+    // coordinates across the page. When both columns are detected, pair their
+    // top-to-bottom sequences as a fallback; this avoids dropping rows solely
+    // because perspective shifted their OCR baselines.
+    val orderedNames = nameColumn?.let { index ->
+        columns[index].filter { !isNoise(it.text) && parseCell(it.text).name.isNotBlank() }
+            .sortedBy { (it.rect.top + it.rect.bottom) / 2 }
+            .map { parseCell(it.text).name }
+    }.orEmpty()
+    val orderedAges = ageColumn?.let { index ->
+        columns[index].filter { ageValue(it.text) != null }
+            .sortedBy { (it.rect.top + it.rect.bottom) / 2 }
+            .mapNotNull { ageValue(it.text) }
+    }.orEmpty()
+    val orderedPairs = orderedNames.zip(orderedAges)
+        .filter { (name, age) -> name.isNotBlank() && age.isNotBlank() }
+        .map { (name, age) -> Entry(name, age) }
+    return if (orderedPairs.size > rowAligned.size) orderedPairs else rowAligned
 }
 
 /** Format only the requested fields, keeping each person's full name on one line. */
@@ -911,15 +967,16 @@ fun formatNameAgeList(entries: List<Entry>): String = entries.joinToString("\n")
 fun clusterColumns(cells: List<OcrCell>): List<List<OcrCell>> {
     val cols = mutableListOf<MutableList<OcrCell>>()
     cells.sortedBy { it.rect.left }.forEach { c ->
-        val col = cols.lastOrNull { c0 ->
-            val anchor = c0[0]
-            val overlap = minOf(c.rect.right, anchor.rect.right) -
-                    maxOf(c.rect.left, anchor.rect.left)
-            overlap > 0.3f * minOf(c.rect.width().toFloat(), anchor.rect.width().toFloat())
-        }
+        val tolerance = (c.rect.height() * 1.35f).coerceAtLeast(12f)
+        val nearest = cols.mapIndexedNotNull { index, col ->
+            val centerX = col.map { it.rect.left.toFloat() }.average().toFloat()
+            val distance = kotlin.math.abs(c.rect.left - centerX)
+            if (distance <= tolerance) index to distance else null
+        }.minByOrNull { it.second }
+        val col = nearest?.let { cols[it.first] }
         if (col != null) col.add(c) else cols.add(mutableListOf(c))
     }
-    return cols
+    return cols.sortedBy { col -> col.map { it.rect.left }.average() }
 }
 
 fun columnLetter(index: Int): String {
