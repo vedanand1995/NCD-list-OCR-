@@ -156,7 +156,7 @@ fun TerminalApp() {
         Surface(Modifier.fillMaxSize(), color = TERM_BG) {
             Column(Modifier.fillMaxSize().padding(12.dp)) {
                 Text(
-                    "> NCD_LIST_OCR v2.1_",
+                    "> NCD_LIST_OCR v2.2_",
                     color = TERM_TEAL, fontFamily = FontFamily.Monospace,
                     fontWeight = FontWeight.Bold, fontSize = 18.sp
                 )
@@ -228,22 +228,33 @@ fun TerminalApp() {
                                             if (r.contains(tap.x.toInt(), tap.y.toInt())) { hit = cell; break }
                                         }
                                         val tapped = hit ?: return@detectTapGestures
-                                        // select the whole COLUMN: every cell horizontally overlapping the tapped one
-                                        val col = cells.filter { c ->
-                                            val overlap = minOf(c.rect.right, tapped.rect.right) -
-                                                    maxOf(c.rect.left, tapped.rect.left)
-                                            overlap > 0.4f * minOf(
-                                                c.rect.width().toFloat(),
-                                                tapped.rect.width().toFloat()
-                                            )
-                                        }.sortedBy { it.rect.top }
+
+                                        fun columnOf(anchor: OcrCell): List<OcrCell> =
+                                            cells.filter { c ->
+                                                val overlap = minOf(c.rect.right, anchor.rect.right) -
+                                                        maxOf(c.rect.left, anchor.rect.left)
+                                                overlap > 0.4f * minOf(
+                                                    c.rect.width().toFloat(),
+                                                    anchor.rect.width().toFloat()
+                                                )
+                                            }.sortedBy { it.rect.top }
+
                                         if (mode == SelectMode.NAME) {
-                                            nameCol = col
+                                            nameCol = columnOf(tapped)
+                                            // AUTO: age column = nearest column to the RIGHT of name column
+                                            val rightCells = cells.filter { c ->
+                                                c !in nameCol && c.rect.left >= tapped.rect.right - tapped.rect.width() * 0.5f
+                                            }
+                                            val nearest = rightCells.minByOrNull { it.rect.left }
+                                            ageCol = if (nearest != null) columnOf(nearest) else emptyList()
                                             mode = SelectMode.AGE
-                                            status = "$ NAME COLUMN: " + col.size + " ROWS - ab AGE column tap karo"
+                                            status = if (ageCol.isEmpty())
+                                                "$ NAME COL: " + nameCol.size + " rows. Age column mali nathi - manually tap karo"
+                                            else
+                                                "$ NAME " + nameCol.size + " + AGE " + ageCol.size + " auto-selected. PAIR & ADD dabao"
                                         } else {
-                                            ageCol = col
-                                            status = "$ AGE COLUMN: " + col.size + " ROWS - PAIR & ADD dabao"
+                                            ageCol = columnOf(tapped)
+                                            status = "$ AGE COLUMN: " + ageCol.size + " ROWS - PAIR & ADD dabao"
                                         }
                                     }
                                 }
@@ -281,7 +292,6 @@ fun TerminalApp() {
 
                 Spacer(Modifier.height(8.dp))
 
-                // Mode indicator + actions
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     TermButton(
                         if (mode == SelectMode.NAME) "1:NAME COL <" else "1:NAME COL (" + nameCol.size + ")",
@@ -451,7 +461,6 @@ private fun processUri(context: Context, uri: Uri, onDone: (Bitmap?, List<OcrCel
 
 /**
  * Pair NAME column cells with AGE column cells by vertical (row) alignment.
- * Each name gets the age whose vertical center is nearest and not already used.
  */
 fun pairColumns(nameCol: List<OcrCell>, ageCol: List<OcrCell>): List<Entry> {
     val names = nameCol.sortedBy { it.rect.top }
