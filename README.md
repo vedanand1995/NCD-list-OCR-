@@ -1,19 +1,26 @@
-# NCD List OCR
+# NCD List OCR v2.0 — Terminal Edition
 
 Android app (Kotlin + Jetpack Compose) jema:
 
-- **Gallery thi photo select** karo (photo picker)
-- **ML Kit on-device OCR** photo parthi text vanchhe
-- Text mathi **Name, Surname, Phone, Age, Gender** parse kari ne list aape
-- **Export CSV** button thi list share kari shakay
+- **Black background + teal-blue terminal UI**
+- **Camera ane Gallery** — photo click karo ke select karo
+- **Scanning effect** — OCR chalu thay tyare teal scan line
+- **Google Lens jevu cell selection** — photo par OCR na cell (line) tap karo, select thay, "ADD SELECTED" thi list ma aave
+- **AUTO PARSE** — badha cells mathi automatic name + age list
+- **Editable list** — koi pan row par tap karo → name/age edit, delete
+- **COPY button** — "name age" format ma clipboard ma copy (Excel/Sheets ma paste karo)
+- **CSV import** — CSV/text file mathi name+age list import
+- Credit: **developed by Vin∆y Makwana**
 
-## Build
+## APK
 
-1. Android Studio ma open karo (AGP 8.5+).
-2. Run - app phone par install thase.
+GitHub Actions push par automatic **debug APK** banave:
+- Actions tab → Build APK → artifact "NCD-List-OCR-debug-apk"
+- Releases page par "v2.0" tag sathe APK attach thase
 
 ## Tech
 
 - Kotlin, Jetpack Compose, Material 3
-- com.google.mlkit:text-recognition:16.0.1 (fully on-device, internet ni jarur nathi)
-- ActivityResultContracts.PickVisualMedia for gallery
+- ML Kit text-recognition 16.0.1 (on-device)
+- Camera: ActivityResultContracts.TakePicture + FileProvider
+- File import: ActivityResultContracts.OpenDocument
