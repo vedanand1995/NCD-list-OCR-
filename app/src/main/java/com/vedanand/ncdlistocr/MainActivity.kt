@@ -126,7 +126,7 @@ fun TerminalApp() {
                 selected = emptySet()
                 loading = false
                 showGrid = true
-                status = "$ OCR DONE: " + list.size + " CELLS. GRID viewer khuli - cell tap karo"
+                status = "$ OCR DONE: " + list.size + " CELLS. Niche table ma cell tap karo"
             }
             .addOnFailureListener {
                 cells = emptyList(); loading = false
@@ -233,25 +233,38 @@ fun TerminalApp() {
         )
     ) {
         Surface(Modifier.fillMaxSize(), color = TERM_BG) {
-            Column(Modifier.fillMaxSize().padding(12.dp)) {
-                Text(
-                    "> NCD_LIST_OCR v2.4_",
-                    color = TERM_TEAL, fontFamily = FontFamily.Monospace,
-                    fontWeight = FontWeight.Bold, fontSize = 18.sp
-                )
+            Column(Modifier.fillMaxSize().padding(10.dp)) {
+                // Header
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        "> NCD_LIST_OCR v2.5_",
+                        color = TERM_TEAL, fontFamily = FontFamily.Monospace,
+                        fontWeight = FontWeight.Bold, fontSize = 15.sp
+                    )
+                    Text(
+                        "developed by Vin\u2206y Makwana",
+                        color = TERM_TEAL.copy(alpha = 0.6f),
+                        fontFamily = FontFamily.Monospace, fontSize = 9.sp
+                    )
+                }
                 Text(
                     status,
                     color = TERM_TEAL.copy(alpha = 0.6f),
-                    fontFamily = FontFamily.Monospace, fontSize = 11.sp
+                    fontFamily = FontFamily.Monospace, fontSize = 10.sp
                 )
-                Spacer(Modifier.height(8.dp))
+                Spacer(Modifier.height(6.dp))
 
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    TermButton("CAMERA", Modifier.weight(1f)) { launchCamera() }
-                    TermButton("GALLERY", Modifier.weight(1f)) {
+                // Source + tools
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+                    TermButton("CAMERA", Modifier.weight(1f), fontSize = 10.sp) { launchCamera() }
+                    TermButton("GALLERY", Modifier.weight(1f), fontSize = 10.sp) {
                         galleryPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
                     }
-                    TermButton("XLSX/CSV", Modifier.weight(1f)) {
+                    TermButton("XLSX/CSV", Modifier.weight(1f), fontSize = 10.sp) {
                         filePicker.launch(arrayOf(
                             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                             "application/vnd.ms-excel",
@@ -260,122 +273,26 @@ fun TerminalApp() {
                     }
                 }
                 Spacer(Modifier.height(4.dp))
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    TermButton("ROTATE", Modifier.weight(1f), enabled = bitmap != null && !loading) { rotate90() }
-                    TermButton(if (cropMode) "CROPPING..." else "CROP", Modifier.weight(1f), enabled = bitmap != null && !loading) {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+                    TermButton("ROTATE", Modifier.weight(1f), fontSize = 10.sp, enabled = bitmap != null && !loading) { rotate90() }
+                    TermButton(if (cropMode) "CROPPING..." else "CROP", Modifier.weight(1f), fontSize = 10.sp, enabled = bitmap != null && !loading) {
                         cropMode = !cropMode; cropStart = null; cropEnd = null
-                        status = if (cropMode) "$ CROP: photo par drag karo, pachi APPLY dabao" else "$ CROP CANCELLED"
+                        status = if (cropMode) "$ CROP: photo par drag karo" else "$ CROP CANCELLED"
                     }
-                    TermButton("AUTOCROP", Modifier.weight(1f), enabled = bitmap != null && !loading) { autoCrop() }
-                    TermButton(if (showGrid) "PHOTO" else "GRID", Modifier.weight(1f), enabled = cells.isNotEmpty()) { showGrid = !showGrid }
+                    TermButton("AUTOCROP", Modifier.weight(1f), fontSize = 10.sp, enabled = bitmap != null && !loading) { autoCrop() }
                 }
-                Spacer(Modifier.height(8.dp))
+                Spacer(Modifier.height(6.dp))
 
+                // ---- 1) PHOTO (top, fixed height, selection overlay active) ----
                 val bmp = bitmap
-                Box(
-                    Modifier
-                        .fillMaxWidth()
-                        .weight(1f)
-                        .background(TERM_PANEL, RoundedCornerShape(8.dp))
-                        .border(1.dp, TERM_DIM, RoundedCornerShape(8.dp))
-                ) {
-                    if (bmp == null) {
-                        Text(
-                            "$ AWAITING INPUT...\n\n(camera / gallery / xlsx / csv)",
-                            color = TERM_TEAL.copy(alpha = 0.5f),
-                            fontFamily = FontFamily.Monospace,
-                            modifier = Modifier.align(Alignment.Center),
-                            textAlign = TextAlign.Center
-                        )
-                    } else if (showGrid) {
-                        // ---- Excel-style grid viewer with A,B,C headers + row numbers ----
-                        val colGroups = clusterColumns(cells)
-                        val colIndexOf = mutableMapOf<Pair<Int, Int>, Int>()
-                        colGroups.forEachIndexed { ci, grp ->
-                            grp.forEach { colIndexOf[it.blockIndex to it.lineIndex] = ci }
-                        }
-                        val rows = gridRows(cells)
-                        val nCols = colGroups.size
-                        Column(
-                            Modifier
-                                .fillMaxSize()
-                                .verticalScroll(rememberScrollState())
-                        ) {
-                            // header row: corner + A B C...
-                            Row(Modifier.horizontalScroll(rememberScrollState())) {
-                                Text(
-                                    "",
-                                    modifier = Modifier
-                                        .width(32.dp)
-                                        .background(TERM_DIM)
-                                        .border(0.5.dp, TERM_DIM)
-                                        .padding(4.dp)
-                                )
-                                repeat(nCols) { ci ->
-                                    Text(
-                                        columnLetter(ci),
-                                        color = TERM_TEAL,
-                                        fontFamily = FontFamily.Monospace,
-                                        fontSize = 11.sp,
-                                        fontWeight = FontWeight.Bold,
-                                        textAlign = TextAlign.Center,
-                                        modifier = Modifier
-                                            .width(96.dp)
-                                            .background(TERM_DIM)
-                                            .border(0.5.dp, TERM_DIM)
-                                            .padding(4.dp)
-                                    )
-                                }
-                            }
-                            rows.forEachIndexed { ri, row ->
-                                val byCol = mutableMapOf<Int, OcrCell>()
-                                row.forEach { colIndexOf[it.blockIndex to it.lineIndex]?.let { ci -> byCol[ci] = it } }
-                                Row(Modifier.horizontalScroll(rememberScrollState())) {
-                                    Text(
-                                        (ri + 1).toString(),
-                                        color = TERM_DIM,
-                                        fontFamily = FontFamily.Monospace,
-                                        fontSize = 10.sp,
-                                        textAlign = TextAlign.Center,
-                                        modifier = Modifier
-                                            .width(32.dp)
-                                            .background(TERM_PANEL)
-                                            .border(0.5.dp, TERM_DIM)
-                                            .padding(4.dp)
-                                    )
-                                    repeat(nCols) { ci ->
-                                        val cell = byCol[ci]
-                                        val key = cell?.let { it.blockIndex to it.lineIndex }
-                                        val isSel = key != null && key in selected
-                                        Text(
-                                            cell?.text ?: "",
-                                            color = if (isSel) Color.Black else TERM_TEXT,
-                                            fontFamily = FontFamily.Monospace,
-                                            fontSize = 11.sp,
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis,
-                                            modifier = Modifier
-                                                .width(96.dp)
-                                                .background(
-                                                    when {
-                                                        isSel -> TERM_TEAL
-                                                        cell != null -> TERM_BG
-                                                        else -> TERM_PANEL
-                                                    }
-                                                )
-                                                .border(0.5.dp, if (isSel) TERM_TEAL else TERM_DIM)
-                                                .clickable(enabled = cell != null) {
-                                                    if (key != null) {
-                                                        selected = if (isSel) selected - key else selected + key
-                                                    }
-                                                }
-                                                .padding(horizontal = 6.dp, vertical = 5.dp)
-                                        )
-                                    }
-                                }
-                            }
-                        }
-                    } else {
+                if (bmp != null) {
+                    Box(
+                        Modifier
+                            .fillMaxWidth()
+                            .height(170.dp)
+                            .background(TERM_PANEL, RoundedCornerShape(8.dp))
+                            .border(1.dp, TERM_DIM, RoundedCornerShape(8.dp))
+                    ) {
                         var boxSize by remember { mutableStateOf(IntSize.Zero) }
                         Image(
                             bitmap = bmp.asImageBitmap(),
@@ -393,7 +310,6 @@ fun TerminalApp() {
                         val offY = (boxSize.height - bmp.height * scale) / 2f
 
                         if (cropMode) {
-                            // ---- Manual crop: drag rectangle ----
                             Canvas(
                                 Modifier
                                     .fillMaxSize()
@@ -421,10 +337,10 @@ fun TerminalApp() {
                             Row(
                                 Modifier
                                     .align(Alignment.BottomCenter)
-                                    .padding(8.dp),
+                                    .padding(4.dp),
                                 horizontalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
-                                TermButton("APPLY CROP") {
+                                TermButton("APPLY CROP", fontSize = 10.sp) {
                                     val s = cropStart; val e2 = cropEnd
                                     if (s != null && e2 != null) {
                                         val l = ((minOf(s.x, e2.x) - offX) / scale).toInt().coerceIn(0, bmp.width - 1)
@@ -439,12 +355,11 @@ fun TerminalApp() {
                                         status = "$ CROPPED + re-OCR"
                                     }
                                 }
-                                TermButton("CANCEL", color = TERM_WARN) {
+                                TermButton("CANCEL", fontSize = 10.sp, color = TERM_WARN) {
                                     cropMode = false; cropStart = null; cropEnd = null
                                 }
                             }
                         } else {
-                            // ---- Excel-style cell selection overlay ----
                             Canvas(
                                 Modifier
                                     .fillMaxSize()
@@ -454,7 +369,7 @@ fun TerminalApp() {
                                                 val c = hitCell(tap, cells, scale, offX, offY) ?: return@detectTapGestures
                                                 val key = c.blockIndex to c.lineIndex
                                                 selected = if (key in selected) selected - key else selected + key
-                                                status = "$ SELECTED " + selected.size + " CELLS (GRID ma pan select kari shako)"
+                                                status = "$ SELECTED " + selected.size + " CELLS"
                                             },
                                             onLongPress = { tap ->
                                                 val tapped = hitCell(tap, cells, scale, offX, offY) ?: return@detectTapGestures
@@ -501,73 +416,176 @@ fun TerminalApp() {
                             }
                         }
                     }
+                    Spacer(Modifier.height(6.dp))
                 }
 
-                Spacer(Modifier.height(8.dp))
+                // ---- 2) EXCEL TABLE (middle, selectable cells) ----
+                if (showGrid && cells.isNotEmpty()) {
+                    val colGroups = clusterColumns(cells)
+                    val colIndexOf = mutableMapOf<Pair<Int, Int>, Int>()
+                    colGroups.forEachIndexed { ci, grp ->
+                        grp.forEach { colIndexOf[it.blockIndex to it.lineIndex] = ci }
+                    }
+                    val rows = gridRows(cells)
+                    val nCols = colGroups.size
+                    Column(
+                        Modifier
+                            .fillMaxWidth()
+                            .weight(1.2f)
+                            .background(TERM_PANEL, RoundedCornerShape(8.dp))
+                            .border(1.dp, TERM_DIM, RoundedCornerShape(8.dp))
+                            .verticalScroll(rememberScrollState())
+                    ) {
+                        Row(Modifier.horizontalScroll(rememberScrollState())) {
+                            Text(
+                                "",
+                                modifier = Modifier
+                                    .width(28.dp)
+                                    .background(TERM_DIM)
+                                    .border(0.5.dp, TERM_DIM)
+                                    .padding(3.dp)
+                            )
+                            repeat(nCols) { ci ->
+                                Text(
+                                    columnLetter(ci),
+                                    color = TERM_TEAL,
+                                    fontFamily = FontFamily.Monospace,
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    textAlign = TextAlign.Center,
+                                    modifier = Modifier
+                                        .width(86.dp)
+                                        .background(TERM_DIM)
+                                        .border(0.5.dp, TERM_DIM)
+                                        .padding(3.dp)
+                                )
+                            }
+                        }
+                        rows.forEachIndexed { ri, row ->
+                            val byCol = mutableMapOf<Int, OcrCell>()
+                            row.forEach { colIndexOf[it.blockIndex to it.lineIndex]?.let { ci -> byCol[ci] = it } }
+                            Row(Modifier.horizontalScroll(rememberScrollState())) {
+                                Text(
+                                    (ri + 1).toString(),
+                                    color = TERM_DIM,
+                                    fontFamily = FontFamily.Monospace,
+                                    fontSize = 9.sp,
+                                    textAlign = TextAlign.Center,
+                                    modifier = Modifier
+                                        .width(28.dp)
+                                        .background(TERM_PANEL)
+                                        .border(0.5.dp, TERM_DIM)
+                                        .padding(3.dp)
+                                )
+                                repeat(nCols) { ci ->
+                                    val cell = byCol[ci]
+                                    val key = cell?.let { it.blockIndex to it.lineIndex }
+                                    val isSel = key != null && key in selected
+                                    Text(
+                                        cell?.text ?: "",
+                                        color = if (isSel) Color.Black else TERM_TEXT,
+                                        fontFamily = FontFamily.Monospace,
+                                        fontSize = 10.sp,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        modifier = Modifier
+                                            .width(86.dp)
+                                            .background(
+                                                when {
+                                                    isSel -> TERM_TEAL
+                                                    cell != null -> TERM_BG
+                                                    else -> TERM_PANEL
+                                                }
+                                            )
+                                            .border(0.5.dp, if (isSel) TERM_TEAL else TERM_DIM)
+                                            .clickable(enabled = cell != null) {
+                                                if (key != null) {
+                                                    selected = if (isSel) selected - key else selected + key
+                                                }
+                                            }
+                                            .padding(horizontal = 5.dp, vertical = 4.dp)
+                                    )
+                                }
+                            }
+                        }
+                    }
+                    Spacer(Modifier.height(6.dp))
+                }
 
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    TermButton("PAIR & ADD (" + selected.size + ")", Modifier.weight(1f), enabled = selected.isNotEmpty()) {
+                // ---- 3) NAME + AGE LIST (bottom) ----
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+                    TermButton("PAIR & ADD (" + selected.size + ")", Modifier.weight(1f), fontSize = 10.sp, enabled = selected.isNotEmpty()) {
                         val sel = cells.filter { (it.blockIndex to it.lineIndex) in selected }
                         val pairs = pairSelected(sel)
                         entries = entries + pairs
                         selected = emptySet()
                         status = "$ ADDED " + pairs.size + " ENTRIES"
                     }
-                    TermButton("AUTO PARSE", Modifier.weight(1f), enabled = cells.isNotEmpty() && !loading) {
+                    TermButton("AUTO PARSE", Modifier.weight(1f), fontSize = 10.sp, enabled = cells.isNotEmpty() && !loading) {
                         entries = cells.map { parseCell(it.text) }.filter { it.name.isNotBlank() }
                         status = "$ PARSED " + entries.size + " ENTRIES"
                     }
                 }
-                Spacer(Modifier.height(8.dp))
+                Spacer(Modifier.height(4.dp))
 
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                    Text("NAME", color = TERM_TEAL, fontFamily = FontFamily.Monospace, fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                    Text("AGE", color = TERM_TEAL, fontFamily = FontFamily.Monospace, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .background(TERM_DIM, RoundedCornerShape(4.dp))
+                        .padding(horizontal = 8.dp, vertical = 3.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text("NAME", color = TERM_TEAL, fontFamily = FontFamily.Monospace, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                    Text("AGE", color = TERM_TEAL, fontFamily = FontFamily.Monospace, fontSize = 11.sp, fontWeight = FontWeight.Bold)
                 }
 
-                LazyColumn(Modifier.weight(1f)) {
-                    items(entries.size) { i ->
-                        val e = entries[i]
-                        Row(
-                            Modifier
-                                .fillMaxWidth()
-                                .padding(vertical = 2.dp)
-                                .background(TERM_PANEL, RoundedCornerShape(4.dp))
-                                .clickable { editingIndex = i }
-                                .padding(horizontal = 8.dp, vertical = 6.dp),
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            Text(
-                                "> " + e.name,
-                                color = TERM_TEXT, fontFamily = FontFamily.Monospace, fontSize = 14.sp
-                            )
-                            Text(
-                                e.age.ifBlank { "_" },
-                                color = TERM_BLUE, fontFamily = FontFamily.Monospace, fontSize = 14.sp, fontWeight = FontWeight.Bold
-                            )
+                Box(Modifier.fillMaxWidth().weight(1f)) {
+                    if (entries.isEmpty()) {
+                        Text(
+                            "$ list khali - cell select kari ne PAIR & ADD dabao",
+                            color = TERM_TEAL.copy(alpha = 0.4f),
+                            fontFamily = FontFamily.Monospace,
+                            fontSize = 10.sp,
+                            modifier = Modifier.align(Alignment.Center)
+                        )
+                    } else {
+                        LazyColumn(Modifier.fillMaxSize()) {
+                            items(entries.size) { i ->
+                                val e = entries[i]
+                                Row(
+                                    Modifier
+                                        .fillMaxWidth()
+                                        .padding(vertical = 1.dp)
+                                        .background(TERM_PANEL, RoundedCornerShape(3.dp))
+                                        .clickable { editingIndex = i }
+                                        .padding(horizontal = 8.dp, vertical = 4.dp),
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Text(
+                                        "> " + e.name,
+                                        color = TERM_TEXT, fontFamily = FontFamily.Monospace, fontSize = 13.sp
+                                    )
+                                    Text(
+                                        e.age.ifBlank { "_" },
+                                        color = TERM_BLUE, fontFamily = FontFamily.Monospace, fontSize = 13.sp, fontWeight = FontWeight.Bold
+                                    )
+                                }
+                            }
                         }
                     }
                 }
 
-                Spacer(Modifier.height(8.dp))
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    TermButton("COPY", Modifier.weight(1f), enabled = entries.isNotEmpty()) {
+                Spacer(Modifier.height(6.dp))
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+                    TermButton("COPY (" + entries.size + ")", Modifier.weight(1f), fontSize = 10.sp, enabled = entries.isNotEmpty()) {
                         val text = entries.joinToString("\n") { (it.name + " " + it.age).trim() }
                         clipboard.setText(AnnotatedString(text))
                         status = "$ COPIED " + entries.size + " LINES TO CLIPBOARD"
                     }
-                    TermButton("CLEAR", Modifier.weight(1f), enabled = entries.isNotEmpty()) {
+                    TermButton("CLEAR", Modifier.weight(1f), fontSize = 10.sp, enabled = entries.isNotEmpty()) {
                         entries = emptyList(); status = "$ LIST CLEARED"
                     }
                 }
-                Spacer(Modifier.height(6.dp))
-                Text(
-                    "developed by Vin\u2206y Makwana",
-                    color = TERM_TEAL.copy(alpha = 0.7f),
-                    fontFamily = FontFamily.Monospace,
-                    fontSize = 11.sp,
-                    modifier = Modifier.align(Alignment.CenterHorizontally)
-                )
             }
 
             editingIndex?.let { idx ->
@@ -603,19 +621,19 @@ fun TerminalApp() {
                             }
                         },
                         confirmButton = {
-                            TermButton("SAVE") {
+                            TermButton("SAVE", fontSize = 10.sp) {
                                 entries = entries.toMutableList().also { it[idx] = Entry(name.trim(), age) }
                                 editingIndex = null
                             }
                         },
                         dismissButton = {
                             Row {
-                                TermButton("DELETE", color = TERM_WARN) {
+                                TermButton("DELETE", fontSize = 10.sp, color = TERM_WARN) {
                                     entries = entries.toMutableList().also { it.removeAt(idx) }
                                     editingIndex = null
                                 }
                                 Spacer(Modifier.width(8.dp))
-                                TermButton("CANCEL") { editingIndex = null }
+                                TermButton("CANCEL", fontSize = 10.sp) { editingIndex = null }
                             }
                         }
                     )
@@ -626,7 +644,7 @@ fun TerminalApp() {
 }
 
 @Composable
-fun TermButton(label: String, modifier: Modifier = Modifier, enabled: Boolean = true, color: Color = TERM_TEAL, onClick: () -> Unit) {
+fun TermButton(label: String, modifier: Modifier = Modifier, enabled: Boolean = true, color: Color = TERM_TEAL, fontSize: androidx.compose.ui.unit.TextUnit = 12.sp, onClick: () -> Unit) {
     Button(
         onClick = onClick,
         enabled = enabled,
@@ -637,9 +655,10 @@ fun TermButton(label: String, modifier: Modifier = Modifier, enabled: Boolean = 
             disabledContainerColor = Color(0xFF0A0A0A),
             disabledContentColor = Color(0xFF333333)
         ),
-        shape = RoundedCornerShape(6.dp)
+        shape = RoundedCornerShape(6.dp),
+        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
     ) {
-        Text(label, fontFamily = FontFamily.Monospace, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+        Text(label, fontFamily = FontFamily.Monospace, fontSize = fontSize, fontWeight = FontWeight.Bold, maxLines = 1)
     }
 }
 
@@ -787,7 +806,7 @@ fun parseCell(raw: String): Entry {
 }
 
 /**
- * Grid (from xlsx or csv) -> entries. Header-aware: finds name/age columns.
+ * Grid (from xlsx or csv) -> entries. Header-aware.
  */
 fun gridToEntries(grid: List<List<String>>): List<Entry> {
     if (grid.isEmpty()) return emptyList()
@@ -804,7 +823,6 @@ fun gridToEntries(grid: List<List<String>>): List<Entry> {
             name = row.getOrNull(nameIdx)?.trim() ?: ""
             age = if (ageIdx >= 0) row.getOrNull(ageIdx)?.filter { it.isDigit() } ?: "" else ""
         } else {
-            // fallback: first text column = name, first 2-3 digit numeric = age
             name = row.firstOrNull { it.trim().isNotEmpty() && it.trim().toIntOrNull() == null }?.trim() ?: ""
             age = row.firstOrNull { (it.trim().toIntOrNull() ?: 0) in 18..120 }?.trim() ?: ""
         }
@@ -825,8 +843,7 @@ fun parseCsv(raw: String): List<Entry> {
 }
 
 /**
- * Minimal .xlsx reader (no external library): unzip, parse sharedStrings.xml
- * and the first worksheet, return grid of strings.
+ * Minimal .xlsx reader (no external library).
  */
 fun parseXlsx(context: Context, uri: Uri): List<List<String>> {
     val shared = mutableListOf<String>()
