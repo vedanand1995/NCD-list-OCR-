@@ -3,6 +3,7 @@ package com.vedanand.ncdlistocr
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Matrix
 import android.graphics.Rect
 import android.net.Uri
 import android.os.Bundle
@@ -21,10 +22,14 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -47,6 +52,7 @@ import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.FileProvider
+import androidx.exifinterface.media.ExifInterface
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.text.TextRecognition
 import com.google.mlkit.vision.text.latin.TextRecognizerOptions
@@ -76,8 +82,6 @@ data class OcrCell(
     val lineIndex: Int
 )
 
-enum class SelectMode { NAME, AGE }
-
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -90,28 +94,61 @@ fun TerminalApp() {
     val context = LocalContext.current
     var bitmap by remember { mutableStateOf<Bitmap?>(null) }
     var cells by remember { mutableStateOf<List<OcrCell>>(emptyList()) }
-    var mode by remember { mutableStateOf(SelectMode.NAME) }
-    var nameCol by remember { mutableStateOf<List<OcrCell>>(emptyList()) }
-    var ageCol by remember { mutableStateOf<List<OcrCell>>(emptyList()) }
+    var selected by remember { mutableStateOf(setOf<Pair<Int, Int>>()) }
     var entries by remember { mutableStateOf(listOf<Entry>()) }
     var status by remember { mutableStateOf("$ SYSTEM READY") }
     var loading by remember { mutableStateOf(false) }
     var editingIndex by remember { mutableStateOf<Int?>(null) }
     var photoUri by remember { mutableStateOf<Uri?>(null) }
+    var cropMode by remember { mutableStateOf(false) }
+    var cropStart by remember { mutableStateOf<Offset?>(null) }
+    var cropEnd by remember { mutableStateOf<Offset?>(null) }
+    var showGrid by remember { mutableStateOf(false) }
 
-    fun resetSelection() { nameCol = emptyList(); ageCol = emptyList(); mode = SelectMode.NAME }
+    fun resetForNewImage() { selected = emptySet(); entries = emptyList(); cropMode = false; showGrid = false }
+
+    fun ocrBitmap(bmp: Bitmap) {
+        loading = true
+        val image = InputImage.fromBitmap(bmp, 0)
+        val recognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
+        recognizer.process(image)
+            .addOnSuccessListener { visionText ->
+                val list = mutableListOf<OcrCell>()
+                visionText.textBlocks.forEachIndexed { bi, block ->
+                    block.lines.forEachIndexed { li, line ->
+                        line.boundingBox?.let { list.add(OcrCell(line.text, it, bi, li)) }
+                    }
+                }
+                cells = list
+                selected = emptySet()
+                loading = false
+                status = "$ OCR DONE: " + list.size + " CELLS. Tap cell = select, long-press = full column"
+            }
+            .addOnFailureListener {
+                cells = emptyList(); loading = false
+                status = "$ OCR FAILED"
+            }
+    }
 
     // --- Gallery picker ---
     val galleryPicker = rememberLauncherForActivityResult(
         ActivityResultContracts.PickVisualMedia()
-    ) { uri -> if (uri != null) processUri(context, uri) { b, c -> bitmap = b; cells = c; resetSelection() } }
+    ) { uri -> if (uri != null) {
+        resetForNewImage()
+        val bmp = loadBitmapWithExif(context, uri)
+        if (bmp != null) { bitmap = bmp; ocrBitmap(bmp) } else status = "$ IMAGE LOAD FAILED"
+    } }
 
     // --- Camera capture ---
     val cameraLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.TakePicture()
     ) { ok ->
         val u = photoUri
-        if (ok && u != null) processUri(context, u) { b, c -> bitmap = b; cells = c; resetSelection() }
+        if (ok && u != null) {
+            resetForNewImage()
+            val bmp = loadBitmapWithExif(context, u)
+            if (bmp != null) { bitmap = bmp; ocrBitmap(bmp) } else status = "$ IMAGE LOAD FAILED"
+        }
     }
     fun launchCamera() {
         val dir = File(context.cacheDir, "images").apply { mkdirs() }
@@ -137,6 +174,35 @@ fun TerminalApp() {
         }
     }
 
+    fun rotate90() {
+        val b = bitmap ?: return
+        resetForNewImage()
+        val rotated = rotateBitmap(b, 90f)
+        bitmap = rotated
+        ocrBitmap(rotated)
+    }
+
+    fun autoCrop() {
+        val b = bitmap ?: return
+        if (cells.isEmpty()) { status = "$ AUTO CROP: pehla OCR joiye"; return }
+        var left = Int.MAX_VALUE; var top = Int.MAX_VALUE
+        var right = 0; var bottom = 0
+        cells.forEach {
+            left = minOf(left, it.rect.left); top = minOf(top, it.rect.top)
+            right = maxOf(right, it.rect.right); bottom = maxOf(bottom, it.rect.bottom)
+        }
+        val mx = ((right - left) * 0.05f).toInt().coerceAtLeast(10)
+        val my = ((bottom - top) * 0.05f).toInt().coerceAtLeast(10)
+        val cl = (left - mx).coerceAtLeast(0); val ct = (top - my).coerceAtLeast(0)
+        val cr = (right + mx).coerceAtMost(b.width); val cb = (bottom + my).coerceAtMost(b.height)
+        if (cr - cl < 20 || cb - ct < 20) { status = "$ AUTO CROP FAILED"; return }
+        resetForNewImage()
+        val cropped = Bitmap.createBitmap(b, cl, ct, cr - cl, cb - ct)
+        bitmap = cropped
+        ocrBitmap(cropped)
+        status = "$ AUTO CROPPED + re-OCR"
+    }
+
     // --- Scanning animation ---
     val scanTransition = rememberInfiniteTransition(label = "scan")
     val scanY by scanTransition.animateFloat(
@@ -157,7 +223,7 @@ fun TerminalApp() {
         Surface(Modifier.fillMaxSize(), color = TERM_BG) {
             Column(Modifier.fillMaxSize().padding(12.dp)) {
                 Text(
-                    "> NCD_LIST_OCR v2.2_",
+                    "> NCD_LIST_OCR v2.3_",
                     color = TERM_TEAL, fontFamily = FontFamily.Monospace,
                     fontWeight = FontWeight.Bold, fontSize = 18.sp
                 )
@@ -168,7 +234,7 @@ fun TerminalApp() {
                 )
                 Spacer(Modifier.height(8.dp))
 
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     TermButton("CAMERA", Modifier.weight(1f)) { launchCamera() }
                     TermButton("GALLERY", Modifier.weight(1f)) {
                         galleryPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
@@ -176,6 +242,16 @@ fun TerminalApp() {
                     TermButton("CSV", Modifier.weight(1f)) {
                         filePicker.launch(arrayOf("text/csv", "text/plain", "text/comma-separated-values", "application/csv"))
                     }
+                }
+                Spacer(Modifier.height(4.dp))
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    TermButton("⟳ ROTATE", Modifier.weight(1f), enabled = bitmap != null && !loading) { rotate90() }
+                    TermButton(if (cropMode) "✂ CROPPING..." else "✂ CROP", Modifier.weight(1f), enabled = bitmap != null && !loading) {
+                        cropMode = !cropMode; cropStart = null; cropEnd = null
+                        status = if (cropMode) "$ CROP: photo par drag karo, pachi APPLY dabao" else "$ CROP CANCELLED"
+                    }
+                    TermButton("▣ AUTOCROP", Modifier.weight(1f), enabled = bitmap != null && !loading) { autoCrop() }
+                    TermButton(if (showGrid) "▦ PHOTO" else "▦ GRID", Modifier.weight(1f), enabled = cells.isNotEmpty()) { showGrid = !showGrid }
                 }
                 Spacer(Modifier.height(8.dp))
 
@@ -195,6 +271,58 @@ fun TerminalApp() {
                             modifier = Modifier.align(Alignment.Center),
                             textAlign = TextAlign.Center
                         )
+                    } else if (showGrid) {
+                        // ---- Excel-like grid viewer ----
+                        val rows = gridRows(cells)
+                        Column(
+                            Modifier
+                                .fillMaxSize()
+                                .verticalScroll(rememberScrollState())
+                                .padding(4.dp)
+                        ) {
+                            rows.forEachIndexed { ri, row ->
+                                Row(
+                                    Modifier
+                                        .fillMaxWidth()
+                                        .horizontalScroll(rememberScrollState())
+                                ) {
+                                    Text(
+                                        (ri + 1).toString(),
+                                        color = TERM_DIM, fontFamily = FontFamily.Monospace,
+                                        fontSize = 10.sp,
+                                        modifier = Modifier
+                                            .width(28.dp)
+                                            .padding(4.dp)
+                                    )
+                                    row.forEach { cell ->
+                                        val key = cell.blockIndex to cell.lineIndex
+                                        val isSel = key in selected
+                                        Text(
+                                            cell.text,
+                                            color = if (isSel) Color.Black else TERM_TEXT,
+                                            fontFamily = FontFamily.Monospace,
+                                            fontSize = 11.sp,
+                                            maxLines = 1,
+                                            modifier = Modifier
+                                                .padding(1.dp)
+                                                .background(
+                                                    if (isSel) TERM_TEAL else TERM_BG,
+                                                    RoundedCornerShape(3.dp)
+                                                )
+                                                .border(
+                                                    1.dp,
+                                                    if (isSel) TERM_TEAL else TERM_DIM,
+                                                    RoundedCornerShape(3.dp)
+                                                )
+                                                .clickable {
+                                                    selected = if (isSel) selected - key else selected + key
+                                                }
+                                                .padding(horizontal = 6.dp, vertical = 4.dp)
+                                        )
+                                    }
+                                }
+                            }
+                        }
                     } else {
                         var boxSize by remember { mutableStateOf(IntSize.Zero) }
                         Image(
@@ -212,87 +340,132 @@ fun TerminalApp() {
                         val offX = (boxSize.width - bmp.width * scale) / 2f
                         val offY = (boxSize.height - bmp.height * scale) / 2f
 
-                        // Column-select overlay (Google Lens style)
-                        Canvas(
-                            Modifier
-                                .fillMaxSize()
-                                .pointerInput(cells, scale, offX, offY) {
-                                    detectTapGestures { tap ->
-                                        var hit: OcrCell? = null
-                                        for (cell in cells) {
-                                            val r = Rect(
-                                                (cell.rect.left * scale + offX).toInt(),
-                                                (cell.rect.top * scale + offY).toInt(),
-                                                (cell.rect.right * scale + offX).toInt(),
-                                                (cell.rect.bottom * scale + offY).toInt()
-                                            )
-                                            if (r.contains(tap.x.toInt(), tap.y.toInt())) { hit = cell; break }
-                                        }
-                                        val tapped = hit ?: return@detectTapGestures
-
-                                        fun columnOf(anchor: OcrCell): List<OcrCell> =
-                                            cells.filter { c ->
-                                                val overlap = minOf(c.rect.right, anchor.rect.right) -
-                                                        maxOf(c.rect.left, anchor.rect.left)
-                                                overlap > 0.4f * minOf(
-                                                    c.rect.width().toFloat(),
-                                                    anchor.rect.width().toFloat()
-                                                )
-                                            }.sortedBy { it.rect.top }
-
-                                        if (mode == SelectMode.NAME) {
-                                            nameCol = columnOf(tapped)
-                                            // AUTO: age column = nearest column to the RIGHT of name column
-                                            val rightCells = cells.filter { c ->
-                                                c !in nameCol && c.rect.left >= tapped.rect.right - tapped.rect.width() * 0.5f
+                        if (cropMode) {
+                            // ---- Manual crop: drag rectangle ----
+                            Canvas(
+                                Modifier
+                                    .fillMaxSize()
+                                    .pointerInput(cropMode) {
+                                        detectDragGestures(
+                                            onDragStart = { cropStart = it; cropEnd = it },
+                                            onDragEnd = { },
+                                            onDrag = { change, _ ->
+                                                change.consume()
+                                                cropEnd = change.position
                                             }
-                                            val nearest = rightCells.minByOrNull { it.rect.left }
-                                            ageCol = if (nearest != null) columnOf(nearest) else emptyList()
-                                            mode = SelectMode.AGE
-                                            status = if (ageCol.isEmpty())
-                                                "$ NAME COL: " + nameCol.size + " rows. Age column mali nathi - manually tap karo"
-                                            else
-                                                "$ NAME " + nameCol.size + " + AGE " + ageCol.size + " auto-selected. PAIR & ADD dabao"
-                                        } else {
-                                            ageCol = columnOf(tapped)
-                                            status = "$ AGE COLUMN: " + ageCol.size + " ROWS - PAIR & ADD dabao"
-                                        }
+                                        )
                                     }
-                                }
-                        ) {
-                            cells.forEach { cell ->
-                                val topLeft = Offset(
-                                    cell.rect.left * scale + offX,
-                                    cell.rect.top * scale + offY
-                                )
-                                val sz = Size(
-                                    cell.rect.width() * scale,
-                                    cell.rect.height() * scale
-                                )
-                                val isName = nameCol.any {
-                                    it.blockIndex == cell.blockIndex && it.lineIndex == cell.lineIndex
-                                }
-                                val isAge = ageCol.any {
-                                    it.blockIndex == cell.blockIndex && it.lineIndex == cell.lineIndex
-                                }
-                                if (isName) {
-                                    drawRect(TERM_TEAL.copy(alpha = 0.30f), topLeft, sz)
-                                    drawRect(TERM_TEAL, topLeft, sz, style = Stroke(width = 4f))
-                                } else if (isAge) {
-                                    drawRect(TERM_BLUE.copy(alpha = 0.30f), topLeft, sz)
-                                    drawRect(TERM_BLUE, topLeft, sz, style = Stroke(width = 4f))
-                                } else {
-                                    drawRect(TERM_BLUE.copy(alpha = 0.20f), topLeft, sz, style = Stroke(width = 2f))
+                            ) {
+                                val s = cropStart; val e2 = cropEnd
+                                if (s != null && e2 != null) {
+                                    val r = androidx.compose.ui.geometry.Rect(
+                                        minOf(s.x, e2.x), minOf(s.y, e2.y),
+                                        maxOf(s.x, e2.x), maxOf(s.y, e2.y)
+                                    )
+                                    drawRect(TERM_TEAL.copy(alpha = 0.15f), r.topLeft, r.size)
+                                    drawRect(TERM_TEAL, r.topLeft, r.size, style = Stroke(width = 3f))
                                 }
                             }
-                            if (loading) {
-                                val y = scanY * size.height
-                                drawLine(TERM_TEAL, Offset(0f, y), Offset(size.width, y), strokeWidth = 6f)
-                                drawRect(
-                                    TERM_TEAL.copy(alpha = 0.08f),
-                                    Offset.Zero,
-                                    Size(size.width, y)
-                                )
+                            Row(
+                                Modifier
+                                    .align(Alignment.BottomCenter)
+                                    .padding(8.dp),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                TermButton("✓ APPLY CROP") {
+                                    val s = cropStart; val e2 = cropEnd
+                                    if (s != null && e2 != null) {
+                                        val l = ((minOf(s.x, e2.x) - offX) / scale).toInt().coerceIn(0, bmp.width - 1)
+                                        val t = ((minOf(s.y, e2.y) - offY) / scale).toInt().coerceIn(0, bmp.height - 1)
+                                        val r = ((maxOf(s.x, e2.x) - offX) / scale).toInt().coerceIn(l + 1, bmp.width)
+                                        val b2 = ((maxOf(s.y, e2.y) - offY) / scale).toInt().coerceIn(t + 1, bmp.height)
+                                        resetForNewImage()
+                                        val cropped = Bitmap.createBitmap(bmp, l, t, r - l, b2 - t)
+                                        bitmap = cropped
+                                        cropMode = false
+                                        ocrBitmap(cropped)
+                                        status = "$ CROPPED + re-OCR"
+                                    }
+                                }
+                                TermButton("✗ CANCEL", color = TERM_WARN) {
+                                    cropMode = false; cropStart = null; cropEnd = null
+                                }
+                            }
+                        } else {
+                            // ---- Excel-style cell selection overlay ----
+                            Canvas(
+                                Modifier
+                                    .fillMaxSize()
+                                    .pointerInput(cells, scale, offX, offY) {
+                                        detectTapGestures(
+                                            onTap = { tap ->
+                                                var hit: OcrCell? = null
+                                                for (cell in cells) {
+                                                    val r = Rect(
+                                                        (cell.rect.left * scale + offX).toInt(),
+                                                        (cell.rect.top * scale + offY).toInt(),
+                                                        (cell.rect.right * scale + offX).toInt(),
+                                                        (cell.rect.bottom * scale + offY).toInt()
+                                                    )
+                                                    if (r.contains(tap.x.toInt(), tap.y.toInt())) { hit = cell; break }
+                                                }
+                                                val c = hit ?: return@detectTapGestures
+                                                val key = c.blockIndex to c.lineIndex
+                                                selected = if (key in selected) selected - key else selected + key
+                                                status = "$ SELECTED " + selected.size + " CELLS (long-press = full column)"
+                                            },
+                                            onLongPress = { tap ->
+                                                var hit: OcrCell? = null
+                                                for (cell in cells) {
+                                                    val r = Rect(
+                                                        (cell.rect.left * scale + offX).toInt(),
+                                                        (cell.rect.top * scale + offY).toInt(),
+                                                        (cell.rect.right * scale + offX).toInt(),
+                                                        (cell.rect.bottom * scale + offY).toInt()
+                                                    )
+                                                    if (r.contains(tap.x.toInt(), tap.y.toInt())) { hit = cell; break }
+                                                }
+                                                val tapped = hit ?: return@detectTapGestures
+                                                val col = cells.filter { c ->
+                                                    val overlap = minOf(c.rect.right, tapped.rect.right) -
+                                                            maxOf(c.rect.left, tapped.rect.left)
+                                                    overlap > 0.4f * minOf(
+                                                        c.rect.width().toFloat(),
+                                                        tapped.rect.width().toFloat()
+                                                    )
+                                                }
+                                                selected = selected + col.map { it.blockIndex to it.lineIndex }
+                                                status = "$ COLUMN ADDED: " + col.size + " cells. Total " + selected.size
+                                            }
+                                        )
+                                    }
+                            ) {
+                                cells.forEach { cell ->
+                                    val topLeft = Offset(
+                                        cell.rect.left * scale + offX,
+                                        cell.rect.top * scale + offY
+                                    )
+                                    val sz = Size(
+                                        cell.rect.width() * scale,
+                                        cell.rect.height() * scale
+                                    )
+                                    val key = cell.blockIndex to cell.lineIndex
+                                    if (key in selected) {
+                                        drawRect(TERM_TEAL.copy(alpha = 0.30f), topLeft, sz)
+                                        drawRect(TERM_TEAL, topLeft, sz, style = Stroke(width = 4f))
+                                    } else {
+                                        drawRect(TERM_BLUE.copy(alpha = 0.20f), topLeft, sz, style = Stroke(width = 2f))
+                                    }
+                                }
+                                if (loading) {
+                                    val y = scanY * size.height
+                                    drawLine(TERM_TEAL, Offset(0f, y), Offset(size.width, y), strokeWidth = 6f)
+                                    drawRect(
+                                        TERM_TEAL.copy(alpha = 0.08f),
+                                        Offset.Zero,
+                                        Size(size.width, y)
+                                    )
+                                }
                             }
                         }
                     }
@@ -301,21 +474,12 @@ fun TerminalApp() {
                 Spacer(Modifier.height(8.dp))
 
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    TermButton(
-                        if (mode == SelectMode.NAME) "1:NAME COL <" else "1:NAME COL (" + nameCol.size + ")",
-                        Modifier.weight(1f), color = TERM_TEAL, enabled = cells.isNotEmpty() && !loading
-                    ) { mode = SelectMode.NAME; status = "$ TAP any cell in NAME column" }
-                    TermButton(
-                        if (mode == SelectMode.AGE) "2:AGE COL <" else "2:AGE COL (" + ageCol.size + ")",
-                        Modifier.weight(1f), color = TERM_BLUE, enabled = cells.isNotEmpty() && !loading
-                    ) { mode = SelectMode.AGE; status = "$ TAP any cell in AGE column" }
-                }
-                Spacer(Modifier.height(4.dp))
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    TermButton("PAIR & ADD", Modifier.weight(1f), enabled = nameCol.isNotEmpty() && ageCol.isNotEmpty()) {
-                        val pairs = pairColumns(nameCol, ageCol)
+                    TermButton("PAIR & ADD (" + selected.size + ")", Modifier.weight(1f), enabled = selected.isNotEmpty()) {
+                        val sel = cells.filter { (it.blockIndex to it.lineIndex) in selected }
+                        val pairs = pairSelected(sel)
                         entries = entries + pairs
-                        status = "$ ADDED " + pairs.size + " PAIRS"
+                        selected = emptySet()
+                        status = "$ ADDED " + pairs.size + " ENTRIES"
                     }
                     TermButton("AUTO PARSE", Modifier.weight(1f), enabled = cells.isNotEmpty() && !loading) {
                         entries = cells.map { parseCell(it.text) }.filter { it.name.isNotBlank() }
@@ -447,24 +611,81 @@ fun TermButton(label: String, modifier: Modifier = Modifier, enabled: Boolean = 
     }
 }
 
-// ---------- OCR ----------
+// ---------- Image helpers ----------
 
-private fun processUri(context: Context, uri: Uri, onDone: (Bitmap?, List<OcrCell>) -> Unit) {
-    val bmp = BitmapFactory.decodeStream(context.contentResolver.openInputStream(uri))
-    if (bmp == null) { onDone(null, emptyList()); return }
-    val image = InputImage.fromBitmap(bmp, 0)
-    val recognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
-    recognizer.process(image)
-        .addOnSuccessListener { visionText ->
-            val list = mutableListOf<OcrCell>()
-            visionText.textBlocks.forEachIndexed { bi, block ->
-                block.lines.forEachIndexed { li, line ->
-                    line.boundingBox?.let { list.add(OcrCell(line.text, it, bi, li)) }
-                }
-            }
-            onDone(bmp, list)
+/** Load bitmap with EXIF rotation applied (fixes auto-rotate problem). */
+fun loadBitmapWithExif(context: Context, uri: Uri): Bitmap? {
+    val resolver = context.contentResolver
+    val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+    resolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, bounds) } ?: return null
+    val maxDim = maxOf(bounds.outWidth, bounds.outHeight)
+    val sample = maxOf(1, maxDim / 2048)
+    val opts = BitmapFactory.Options().apply { inSampleSize = sample }
+    val bmp = resolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, opts) }
+        ?: return null
+    val degrees = try {
+        val exif = resolver.openInputStream(uri)?.use { ExifInterface(it) }
+        when (exif?.getAttributeInt(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL)) {
+            ExifInterface.ORIENTATION_ROTATE_90 -> 90f
+            ExifInterface.ORIENTATION_ROTATE_180 -> 180f
+            ExifInterface.ORIENTATION_ROTATE_270 -> 270f
+            else -> 0f
         }
-        .addOnFailureListener { onDone(bmp, emptyList()) }
+    } catch (e: Exception) { 0f }
+    return if (degrees != 0f) rotateBitmap(bmp, degrees) else bmp
+}
+
+fun rotateBitmap(bmp: Bitmap, degrees: Float): Bitmap {
+    val m = Matrix().apply { postRotate(degrees) }
+    return Bitmap.createBitmap(bmp, 0, 0, bmp.width, bmp.height, m, true)
+}
+
+// ---------- OCR helpers ----------
+
+/** Cluster OCR cells into visual rows (for grid viewer). */
+fun gridRows(cells: List<OcrCell>): List<List<OcrCell>> {
+    val sorted = cells.sortedBy { (it.rect.top + it.rect.bottom) / 2 }
+    val rows = mutableListOf<MutableList<OcrCell>>()
+    sorted.forEach { c ->
+        val cy = (c.rect.top + c.rect.bottom) / 2f
+        val row = rows.lastOrNull { r ->
+            val last = r.last()
+            val rc = (last.rect.top + last.rect.bottom) / 2f
+            Math.abs(cy - rc) < 0.7f * last.rect.height().coerceAtLeast(1)
+        }
+        if (row != null) row.add(c) else rows.add(mutableListOf(c))
+    }
+    return rows.map { it.sortedBy { x -> x.rect.left } }
+}
+
+/**
+ * Excel-style: from selected cells, detect name column and age column,
+ * then pair row-wise. If only one column selected, parse each cell directly.
+ */
+fun pairSelected(sel: List<OcrCell>): List<Entry> {
+    if (sel.isEmpty()) return emptyList()
+    // cluster into columns by x-overlap
+    val cols = mutableListOf<MutableList<OcrCell>>()
+    sel.sortedBy { it.rect.left }.forEach { c ->
+        val col = cols.lastOrNull { c0 ->
+            val anchor = c0[0]
+            val overlap = minOf(c.rect.right, anchor.rect.right) -
+                    maxOf(c.rect.left, anchor.rect.left)
+            overlap > 0.3f * minOf(c.rect.width().toFloat(), anchor.rect.width().toFloat())
+        }
+        if (col != null) col.add(c) else cols.add(mutableListOf(c))
+    }
+    if (cols.size == 1) {
+        return cols[0].sortedBy { it.rect.top }
+            .map { parseCell(it.text) }
+            .filter { it.name.isNotBlank() }
+    }
+    // name column = most characters; age column = most numeric cells among the rest
+    val nameCol = cols.maxBy { it.sumOf { c -> c.text.length } }
+    val ageCol = cols.filter { it !== nameCol }
+        .maxByOrNull { it.count { c -> c.text.trim().matches(Regex("\\d{2,3}")) } }
+        ?: cols.filter { it !== nameCol }.first()
+    return pairColumns(nameCol, ageCol)
 }
 
 /**
