@@ -129,9 +129,10 @@ fun TerminalApp() {
                 }
                 cells = list
                 selected = emptySet()
+                entries = extractEntriesFromOcr(list)
                 loading = false
                 showGrid = true
-                status = "$ OCR DONE: " + list.size + " CELLS. Niche table ma cell tap karo"
+                status = "$ OCR DONE: " + list.size + " CELLS; SCANNED " + entries.size + " NAME/AGE ROWS. Review/edit below"
             }
             .addOnFailureListener {
                 cells = emptyList(); loading = false
@@ -551,9 +552,9 @@ fun TerminalApp() {
                         selected = emptySet()
                         status = "$ ADDED " + pairs.size + " ENTRIES"
                     }
-                    TermButton("AUTO PARSE", Modifier.weight(1f), fontSize = 10.sp, enabled = cells.isNotEmpty() && !loading) {
-                        entries = cells.map { parseCell(it.text) }.filter { it.name.isNotBlank() }
-                        status = "$ PARSED " + entries.size + " ENTRIES"
+                    TermButton("SCAN FULL LIST", Modifier.weight(1f), fontSize = 10.sp, enabled = cells.isNotEmpty() && !loading) {
+                        entries = extractEntriesFromOcr(cells)
+                        status = "$ SCANNED " + entries.size + " NAME/AGE ROWS - review below"
                     }
                 }
                 Spacer(Modifier.height(4.dp))
@@ -572,7 +573,7 @@ fun TerminalApp() {
                 Box(Modifier.fillMaxWidth().weight(1f)) {
                     if (entries.isEmpty()) {
                         Text(
-                            "$ list khali - cell select kari ne PAIR & ADD dabao",
+                            "$ list khali - SCAN FULL LIST dabavo athva cells select karo",
                             color = TERM_TEAL.copy(alpha = 0.4f),
                             fontFamily = FontFamily.Monospace,
                             fontSize = 10.sp,
@@ -637,7 +638,7 @@ fun TerminalApp() {
                             }
                             if (entries.isEmpty()) {
                                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                                    Text("First select OCR cells and use PAIR & ADD or AUTO PARSE.", color = TERM_TEXT, fontFamily = FontFamily.Monospace)
+                                    Text("Run SCAN FULL LIST first, then review and edit the rows.", color = TERM_TEXT, fontFamily = FontFamily.Monospace)
                                 }
                             } else {
                                 LazyColumn(Modifier.weight(1f).fillMaxWidth()) {
@@ -830,6 +831,23 @@ fun gridRows(cells: List<OcrCell>): List<List<OcrCell>> {
     return rows.map { it.sortedBy { x -> x.rect.left } }
 }
 
+/**
+ * Convert every visually aligned OCR row into a Name/Age record.
+ * This runs locally on the text already recognized by ML Kit; it uses no cloud API.
+ */
+fun extractEntriesFromOcr(cells: List<OcrCell>): List<Entry> {
+    return gridRows(cells).mapNotNull { row ->
+        val text = row.sortedBy { it.rect.left }.joinToString(" ") { it.text.trim() }
+            .replace(Regex("\\s+"), " ").trim()
+        if (text.isBlank()) return@mapNotNull null
+        val parsed = parseCell(text)
+        val normalized = text.lowercase(Locale.ROOT)
+        val looksLikeHeader = normalized.contains("name") && normalized.contains("age") ||
+            normalized.trim() in setOf("name", "age", "naam", "umar", "vay")
+        if (looksLikeHeader || parsed.name.isBlank()) null else parsed
+    }
+}
+
 /** Cluster OCR cells into visual columns (sorted left to right). */
 fun clusterColumns(cells: List<OcrCell>): List<List<OcrCell>> {
     val cols = mutableListOf<MutableList<OcrCell>>()
@@ -908,7 +926,7 @@ fun parseCell(raw: String): Entry {
         .map { it.groupValues[1].toInt() }
         .firstOrNull { it in 18..120 }
     if (ageMatch != null) text = text.replace(Regex("\\b" + ageMatch + "\\b"), " ")
-    val name = text.replace(Regex("[^A-Za-z\\s]"), " ")
+    val name = text.replace(Regex("[^\\p{L}\\s]"), " ")
         .replace(Regex("\\s+"), " ").trim()
     return Entry(name, ageMatch?.toString() ?: "")
 }
