@@ -7,6 +7,7 @@ import android.graphics.Matrix
 import android.graphics.Rect
 import android.net.Uri
 import android.os.Bundle
+import android.util.Xml
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -48,6 +49,7 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -60,6 +62,7 @@ import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.zip.ZipInputStream
 
 // ---------- Terminal theme ----------
 val TERM_BG = Color(0xFF000000)
@@ -122,7 +125,8 @@ fun TerminalApp() {
                 cells = list
                 selected = emptySet()
                 loading = false
-                status = "$ OCR DONE: " + list.size + " CELLS. Tap cell = select, long-press = full column"
+                showGrid = true
+                status = "$ OCR DONE: " + list.size + " CELLS. GRID viewer khuli - cell tap karo"
             }
             .addOnFailureListener {
                 cells = emptyList(); loading = false
@@ -158,18 +162,26 @@ fun TerminalApp() {
         cameraLauncher.launch(uri)
     }
 
-    // --- CSV / text file import ---
+    // --- Excel / CSV file import ---
     val filePicker = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocument()
     ) { uri ->
         if (uri != null) {
             try {
-                val text = context.contentResolver.openInputStream(uri)!!
-                    .bufferedReader().use { it.readText() }
-                entries = parseCsv(text)
-                status = "$ CSV IMPORTED: " + entries.size + " ROWS"
+                val name = (uri.lastPathSegment ?: "").lowercase(Locale.ROOT)
+                val isXlsx = name.endsWith(".xlsx") || name.endsWith(".xls")
+                if (isXlsx) {
+                    val grid = parseXlsx(context, uri)
+                    entries = gridToEntries(grid)
+                    status = "$ EXCEL IMPORTED: " + entries.size + " ROWS"
+                } else {
+                    val text = context.contentResolver.openInputStream(uri)!!
+                        .bufferedReader().use { it.readText() }
+                    entries = parseCsv(text)
+                    status = "$ CSV IMPORTED: " + entries.size + " ROWS"
+                }
             } catch (e: Exception) {
-                status = "$ CSV READ FAILED"
+                status = "$ FILE READ FAILED: " + (e.message ?: "")
             }
         }
     }
@@ -223,7 +235,7 @@ fun TerminalApp() {
         Surface(Modifier.fillMaxSize(), color = TERM_BG) {
             Column(Modifier.fillMaxSize().padding(12.dp)) {
                 Text(
-                    "> NCD_LIST_OCR v2.3_",
+                    "> NCD_LIST_OCR v2.4_",
                     color = TERM_TEAL, fontFamily = FontFamily.Monospace,
                     fontWeight = FontWeight.Bold, fontSize = 18.sp
                 )
@@ -239,19 +251,23 @@ fun TerminalApp() {
                     TermButton("GALLERY", Modifier.weight(1f)) {
                         galleryPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
                     }
-                    TermButton("CSV", Modifier.weight(1f)) {
-                        filePicker.launch(arrayOf("text/csv", "text/plain", "text/comma-separated-values", "application/csv"))
+                    TermButton("XLSX/CSV", Modifier.weight(1f)) {
+                        filePicker.launch(arrayOf(
+                            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            "application/vnd.ms-excel",
+                            "text/csv", "text/plain", "text/comma-separated-values", "application/csv"
+                        ))
                     }
                 }
                 Spacer(Modifier.height(4.dp))
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    TermButton("⟳ ROTATE", Modifier.weight(1f), enabled = bitmap != null && !loading) { rotate90() }
-                    TermButton(if (cropMode) "✂ CROPPING..." else "✂ CROP", Modifier.weight(1f), enabled = bitmap != null && !loading) {
+                    TermButton("ROTATE", Modifier.weight(1f), enabled = bitmap != null && !loading) { rotate90() }
+                    TermButton(if (cropMode) "CROPPING..." else "CROP", Modifier.weight(1f), enabled = bitmap != null && !loading) {
                         cropMode = !cropMode; cropStart = null; cropEnd = null
                         status = if (cropMode) "$ CROP: photo par drag karo, pachi APPLY dabao" else "$ CROP CANCELLED"
                     }
-                    TermButton("▣ AUTOCROP", Modifier.weight(1f), enabled = bitmap != null && !loading) { autoCrop() }
-                    TermButton(if (showGrid) "▦ PHOTO" else "▦ GRID", Modifier.weight(1f), enabled = cells.isNotEmpty()) { showGrid = !showGrid }
+                    TermButton("AUTOCROP", Modifier.weight(1f), enabled = bitmap != null && !loading) { autoCrop() }
+                    TermButton(if (showGrid) "PHOTO" else "GRID", Modifier.weight(1f), enabled = cells.isNotEmpty()) { showGrid = !showGrid }
                 }
                 Spacer(Modifier.height(8.dp))
 
@@ -265,59 +281,95 @@ fun TerminalApp() {
                 ) {
                     if (bmp == null) {
                         Text(
-                            "$ AWAITING IMAGE INPUT...\n\n(camera / gallery / csv)",
+                            "$ AWAITING INPUT...\n\n(camera / gallery / xlsx / csv)",
                             color = TERM_TEAL.copy(alpha = 0.5f),
                             fontFamily = FontFamily.Monospace,
                             modifier = Modifier.align(Alignment.Center),
                             textAlign = TextAlign.Center
                         )
                     } else if (showGrid) {
-                        // ---- Excel-like grid viewer ----
+                        // ---- Excel-style grid viewer with A,B,C headers + row numbers ----
+                        val colGroups = clusterColumns(cells)
+                        val colIndexOf = mutableMapOf<Pair<Int, Int>, Int>()
+                        colGroups.forEachIndexed { ci, grp ->
+                            grp.forEach { colIndexOf[it.blockIndex to it.lineIndex] = ci }
+                        }
                         val rows = gridRows(cells)
+                        val nCols = colGroups.size
                         Column(
                             Modifier
                                 .fillMaxSize()
                                 .verticalScroll(rememberScrollState())
-                                .padding(4.dp)
                         ) {
-                            rows.forEachIndexed { ri, row ->
-                                Row(
-                                    Modifier
-                                        .fillMaxWidth()
-                                        .horizontalScroll(rememberScrollState())
-                                ) {
+                            // header row: corner + A B C...
+                            Row(Modifier.horizontalScroll(rememberScrollState())) {
+                                Text(
+                                    "",
+                                    modifier = Modifier
+                                        .width(32.dp)
+                                        .background(TERM_DIM)
+                                        .border(0.5.dp, TERM_DIM)
+                                        .padding(4.dp)
+                                )
+                                repeat(nCols) { ci ->
                                     Text(
-                                        (ri + 1).toString(),
-                                        color = TERM_DIM, fontFamily = FontFamily.Monospace,
-                                        fontSize = 10.sp,
+                                        columnLetter(ci),
+                                        color = TERM_TEAL,
+                                        fontFamily = FontFamily.Monospace,
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        textAlign = TextAlign.Center,
                                         modifier = Modifier
-                                            .width(28.dp)
+                                            .width(96.dp)
+                                            .background(TERM_DIM)
+                                            .border(0.5.dp, TERM_DIM)
                                             .padding(4.dp)
                                     )
-                                    row.forEach { cell ->
-                                        val key = cell.blockIndex to cell.lineIndex
-                                        val isSel = key in selected
+                                }
+                            }
+                            rows.forEachIndexed { ri, row ->
+                                val byCol = mutableMapOf<Int, OcrCell>()
+                                row.forEach { colIndexOf[it.blockIndex to it.lineIndex]?.let { ci -> byCol[ci] = it } }
+                                Row(Modifier.horizontalScroll(rememberScrollState())) {
+                                    Text(
+                                        (ri + 1).toString(),
+                                        color = TERM_DIM,
+                                        fontFamily = FontFamily.Monospace,
+                                        fontSize = 10.sp,
+                                        textAlign = TextAlign.Center,
+                                        modifier = Modifier
+                                            .width(32.dp)
+                                            .background(TERM_PANEL)
+                                            .border(0.5.dp, TERM_DIM)
+                                            .padding(4.dp)
+                                    )
+                                    repeat(nCols) { ci ->
+                                        val cell = byCol[ci]
+                                        val key = cell?.let { it.blockIndex to it.lineIndex }
+                                        val isSel = key != null && key in selected
                                         Text(
-                                            cell.text,
+                                            cell?.text ?: "",
                                             color = if (isSel) Color.Black else TERM_TEXT,
                                             fontFamily = FontFamily.Monospace,
                                             fontSize = 11.sp,
                                             maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
                                             modifier = Modifier
-                                                .padding(1.dp)
+                                                .width(96.dp)
                                                 .background(
-                                                    if (isSel) TERM_TEAL else TERM_BG,
-                                                    RoundedCornerShape(3.dp)
+                                                    when {
+                                                        isSel -> TERM_TEAL
+                                                        cell != null -> TERM_BG
+                                                        else -> TERM_PANEL
+                                                    }
                                                 )
-                                                .border(
-                                                    1.dp,
-                                                    if (isSel) TERM_TEAL else TERM_DIM,
-                                                    RoundedCornerShape(3.dp)
-                                                )
-                                                .clickable {
-                                                    selected = if (isSel) selected - key else selected + key
+                                                .border(0.5.dp, if (isSel) TERM_TEAL else TERM_DIM)
+                                                .clickable(enabled = cell != null) {
+                                                    if (key != null) {
+                                                        selected = if (isSel) selected - key else selected + key
+                                                    }
                                                 }
-                                                .padding(horizontal = 6.dp, vertical = 4.dp)
+                                                .padding(horizontal = 6.dp, vertical = 5.dp)
                                         )
                                     }
                                 }
@@ -372,7 +424,7 @@ fun TerminalApp() {
                                     .padding(8.dp),
                                 horizontalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
-                                TermButton("✓ APPLY CROP") {
+                                TermButton("APPLY CROP") {
                                     val s = cropStart; val e2 = cropEnd
                                     if (s != null && e2 != null) {
                                         val l = ((minOf(s.x, e2.x) - offX) / scale).toInt().coerceIn(0, bmp.width - 1)
@@ -387,7 +439,7 @@ fun TerminalApp() {
                                         status = "$ CROPPED + re-OCR"
                                     }
                                 }
-                                TermButton("✗ CANCEL", color = TERM_WARN) {
+                                TermButton("CANCEL", color = TERM_WARN) {
                                     cropMode = false; cropStart = null; cropEnd = null
                                 }
                             }
@@ -399,33 +451,13 @@ fun TerminalApp() {
                                     .pointerInput(cells, scale, offX, offY) {
                                         detectTapGestures(
                                             onTap = { tap ->
-                                                var hit: OcrCell? = null
-                                                for (cell in cells) {
-                                                    val r = Rect(
-                                                        (cell.rect.left * scale + offX).toInt(),
-                                                        (cell.rect.top * scale + offY).toInt(),
-                                                        (cell.rect.right * scale + offX).toInt(),
-                                                        (cell.rect.bottom * scale + offY).toInt()
-                                                    )
-                                                    if (r.contains(tap.x.toInt(), tap.y.toInt())) { hit = cell; break }
-                                                }
-                                                val c = hit ?: return@detectTapGestures
+                                                val c = hitCell(tap, cells, scale, offX, offY) ?: return@detectTapGestures
                                                 val key = c.blockIndex to c.lineIndex
                                                 selected = if (key in selected) selected - key else selected + key
-                                                status = "$ SELECTED " + selected.size + " CELLS (long-press = full column)"
+                                                status = "$ SELECTED " + selected.size + " CELLS (GRID ma pan select kari shako)"
                                             },
                                             onLongPress = { tap ->
-                                                var hit: OcrCell? = null
-                                                for (cell in cells) {
-                                                    val r = Rect(
-                                                        (cell.rect.left * scale + offX).toInt(),
-                                                        (cell.rect.top * scale + offY).toInt(),
-                                                        (cell.rect.right * scale + offX).toInt(),
-                                                        (cell.rect.bottom * scale + offY).toInt()
-                                                    )
-                                                    if (r.contains(tap.x.toInt(), tap.y.toInt())) { hit = cell; break }
-                                                }
-                                                val tapped = hit ?: return@detectTapGestures
+                                                val tapped = hitCell(tap, cells, scale, offX, offY) ?: return@detectTapGestures
                                                 val col = cells.filter { c ->
                                                     val overlap = minOf(c.rect.right, tapped.rect.right) -
                                                             maxOf(c.rect.left, tapped.rect.left)
@@ -642,6 +674,19 @@ fun rotateBitmap(bmp: Bitmap, degrees: Float): Bitmap {
 
 // ---------- OCR helpers ----------
 
+private fun hitCell(tap: Offset, cells: List<OcrCell>, scale: Float, offX: Float, offY: Float): OcrCell? {
+    for (cell in cells) {
+        val r = Rect(
+            (cell.rect.left * scale + offX).toInt(),
+            (cell.rect.top * scale + offY).toInt(),
+            (cell.rect.right * scale + offX).toInt(),
+            (cell.rect.bottom * scale + offY).toInt()
+        )
+        if (r.contains(tap.x.toInt(), tap.y.toInt())) return cell
+    }
+    return null
+}
+
 /** Cluster OCR cells into visual rows (for grid viewer). */
 fun gridRows(cells: List<OcrCell>): List<List<OcrCell>> {
     val sorted = cells.sortedBy { (it.rect.top + it.rect.bottom) / 2 }
@@ -658,15 +703,10 @@ fun gridRows(cells: List<OcrCell>): List<List<OcrCell>> {
     return rows.map { it.sortedBy { x -> x.rect.left } }
 }
 
-/**
- * Excel-style: from selected cells, detect name column and age column,
- * then pair row-wise. If only one column selected, parse each cell directly.
- */
-fun pairSelected(sel: List<OcrCell>): List<Entry> {
-    if (sel.isEmpty()) return emptyList()
-    // cluster into columns by x-overlap
+/** Cluster OCR cells into visual columns (sorted left to right). */
+fun clusterColumns(cells: List<OcrCell>): List<List<OcrCell>> {
     val cols = mutableListOf<MutableList<OcrCell>>()
-    sel.sortedBy { it.rect.left }.forEach { c ->
+    cells.sortedBy { it.rect.left }.forEach { c ->
         val col = cols.lastOrNull { c0 ->
             val anchor = c0[0]
             val overlap = minOf(c.rect.right, anchor.rect.right) -
@@ -675,12 +715,31 @@ fun pairSelected(sel: List<OcrCell>): List<Entry> {
         }
         if (col != null) col.add(c) else cols.add(mutableListOf(c))
     }
+    return cols
+}
+
+fun columnLetter(index: Int): String {
+    var i = index
+    val sb = StringBuilder()
+    while (i >= 0) {
+        sb.insert(0, ('A' + (i % 26)))
+        i = i / 26 - 1
+    }
+    return sb.toString()
+}
+
+/**
+ * Excel-style: from selected cells, detect name column and age column,
+ * then pair row-wise. If only one column selected, parse each cell directly.
+ */
+fun pairSelected(sel: List<OcrCell>): List<Entry> {
+    if (sel.isEmpty()) return emptyList()
+    val cols = clusterColumns(sel)
     if (cols.size == 1) {
         return cols[0].sortedBy { it.rect.top }
             .map { parseCell(it.text) }
             .filter { it.name.isNotBlank() }
     }
-    // name column = most characters; age column = most numeric cells among the rest
     val nameCol = cols.maxBy { it.sumOf { c -> c.text.length } }
     val ageCol = cols.filter { it !== nameCol }
         .maxByOrNull { it.count { c -> c.text.trim().matches(Regex("\\d{2,3}")) } }
@@ -728,33 +787,139 @@ fun parseCell(raw: String): Entry {
 }
 
 /**
- * CSV import: header-aware.
+ * Grid (from xlsx or csv) -> entries. Header-aware: finds name/age columns.
+ */
+fun gridToEntries(grid: List<List<String>>): List<Entry> {
+    if (grid.isEmpty()) return emptyList()
+    val header = grid[0].map { it.trim().lowercase(Locale.ROOT) }
+    val nameIdx = header.indexOfFirst { it.contains("name") || it.contains("naam") }
+    val ageIdx = header.indexOfFirst { it.contains("age") || it.contains("umar") || it.contains("vay") }
+    val hasHeader = nameIdx >= 0 || ageIdx >= 0
+    val data = if (hasHeader) grid.drop(1) else grid
+    return data.mapNotNull { row ->
+        if (row.isEmpty()) return@mapNotNull null
+        val name: String
+        val age: String
+        if (hasHeader && nameIdx >= 0) {
+            name = row.getOrNull(nameIdx)?.trim() ?: ""
+            age = if (ageIdx >= 0) row.getOrNull(ageIdx)?.filter { it.isDigit() } ?: "" else ""
+        } else {
+            // fallback: first text column = name, first 2-3 digit numeric = age
+            name = row.firstOrNull { it.trim().isNotEmpty() && it.trim().toIntOrNull() == null }?.trim() ?: ""
+            age = row.firstOrNull { (it.trim().toIntOrNull() ?: 0) in 18..120 }?.trim() ?: ""
+        }
+        if (name.isBlank()) null else Entry(name, age)
+    }
+}
+
+/**
+ * CSV import.
  */
 fun parseCsv(raw: String): List<Entry> {
     val lines = raw.lines().filter { it.isNotBlank() }
     if (lines.isEmpty()) return emptyList()
-
-    fun split(line: String): List<String> =
-        line.split(Regex(",|\\t|;")).map { it.trim().removeSurrounding("\"") }
-
-    val header = split(lines[0]).map { it.lowercase(Locale.ROOT) }
-    val nameIdx = header.indexOfFirst { it.contains("name") || it.contains("naam") }
-    val ageIdx = header.indexOfFirst { it.contains("age") || it.contains("umar") || it.contains("vay") }
-    val hasHeader = nameIdx >= 0 || ageIdx >= 0
-
-    val dataLines = if (hasHeader) lines.drop(1) else lines
-    return dataLines.mapNotNull { line ->
-        val cols = split(line)
-        if (cols.isEmpty()) return@mapNotNull null
-        val name: String
-        val age: String
-        if (hasHeader && nameIdx >= 0) {
-            name = cols.getOrNull(nameIdx) ?: ""
-            age = if (ageIdx >= 0) cols.getOrNull(ageIdx)?.filter { it.isDigit() } ?: "" else ""
-        } else {
-            val e = parseCell(line)
-            name = e.name; age = e.age
-        }
-        if (name.isBlank()) null else Entry(name, age)
+    val grid = lines.map { line ->
+        line.split(Regex(",|\t|;")).map { it.trim().removeSurrounding("\"") }
     }
+    return gridToEntries(grid)
+}
+
+/**
+ * Minimal .xlsx reader (no external library): unzip, parse sharedStrings.xml
+ * and the first worksheet, return grid of strings.
+ */
+fun parseXlsx(context: Context, uri: Uri): List<List<String>> {
+    val shared = mutableListOf<String>()
+    val sheets = mutableListOf<List<List<String>>>()
+    context.contentResolver.openInputStream(uri)?.use { fis ->
+        ZipInputStream(fis).use { zis ->
+            var ze = zis.nextEntry
+            while (ze != null) {
+                val zn = ze.name
+                if (zn == "xl/sharedStrings.xml") {
+                    val parser = Xml.newPullParser()
+                    parser.setInput(zis, null)
+                    var inSi = false
+                    val sb = StringBuilder()
+                    var ev = parser.eventType
+                    while (ev != org.xmlpull.v1.XmlPullParser.END_DOCUMENT) {
+                        when (ev) {
+                            org.xmlpull.v1.XmlPullParser.START_TAG -> when (parser.name) {
+                                "si" -> { inSi = true; sb.clear() }
+                                "t" -> if (inSi) sb.append(parser.nextText())
+                            }
+                            org.xmlpull.v1.XmlPullParser.END_TAG -> if (parser.name == "si") {
+                                shared.add(sb.toString()); inSi = false
+                            }
+                        }
+                        ev = parser.next()
+                    }
+                } else if (zn.startsWith("xl/worksheets/sheet") && zn.endsWith(".xml") && sheets.isEmpty()) {
+                    val parser = Xml.newPullParser()
+                    parser.setInput(zis, null)
+                    val rows = mutableListOf<List<String>>()
+                    var curRow: MutableList<String>? = null
+                    var ev = parser.eventType
+                    while (ev != org.xmlpull.v1.XmlPullParser.END_DOCUMENT) {
+                        when (ev) {
+                            org.xmlpull.v1.XmlPullParser.START_TAG -> when (parser.name) {
+                                "row" -> { curRow = mutableListOf() }
+                                "c" -> {
+                                    val ref = parser.getAttributeValue(null, "r") ?: ""
+                                    val t = parser.getAttributeValue(null, "t")
+                                    val col = colIndexFromRef(ref)
+                                    val cellText: String = when (t) {
+                                        "s" -> {
+                                            val v = readV(parser)
+                                            v.toIntOrNull()?.let { shared.getOrNull(it) } ?: ""
+                                        }
+                                        "inlineStr" -> readT(parser)
+                                        else -> readV(parser)
+                                    }
+                                    while (curRow != null && curRow.size < col) curRow.add("")
+                                    curRow?.add(cellText)
+                                }
+                            }
+                            org.xmlpull.v1.XmlPullParser.END_TAG -> if (parser.name == "row") {
+                                curRow?.let { rows.add(it) }; curRow = null
+                            }
+                        }
+                        ev = parser.next()
+                    }
+                    sheets.add(rows)
+                }
+                ze = zis.nextEntry
+            }
+        }
+    }
+    return sheets.firstOrNull() ?: emptyList()
+}
+
+private fun colIndexFromRef(ref: String): Int {
+    var col = 0
+    for (ch in ref) {
+        if (ch.isLetter()) col = col * 26 + (ch.uppercaseChar() - 'A' + 1) else break
+    }
+    return (col - 1).coerceAtLeast(0)
+}
+
+private fun readV(parser: org.xmlpull.v1.XmlPullParser): String {
+    var ev = parser.next()
+    val sb = StringBuilder()
+    while (ev != org.xmlpull.v1.XmlPullParser.END_TAG || parser.name != "c") {
+        if (ev == org.xmlpull.v1.XmlPullParser.TEXT) sb.append(parser.text)
+        if (ev == org.xmlpull.v1.XmlPullParser.END_TAG && parser.name == "v") return sb.toString()
+        ev = parser.next()
+    }
+    return sb.toString()
+}
+
+private fun readT(parser: org.xmlpull.v1.XmlPullParser): String {
+    var ev = parser.next()
+    val sb = StringBuilder()
+    while (!(ev == org.xmlpull.v1.XmlPullParser.END_TAG && parser.name == "c")) {
+        if (ev == org.xmlpull.v1.XmlPullParser.TEXT) sb.append(parser.text)
+        ev = parser.next()
+    }
+    return sb.toString().trim()
 }
