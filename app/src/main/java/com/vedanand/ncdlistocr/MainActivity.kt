@@ -756,12 +756,12 @@ fun writeEntriesAsXlsx(context: Context, uri: Uri, entries: List<Entry>) {
         file("_rels/.rels", """<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>""")
         file("xl/workbook.xml", """<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="NCD List" sheetId="1" r:id="rId1"/></sheets></workbook>""")
         file("xl/_rels/workbook.xml.rels", """<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/></Relationships>""")
-        fun xml(value: String) = value.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace(""", "&quot;").replace("'", "&apos;")
+        fun xml(value: String): String = value.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\"", "&quot;").replace("'", "&apos;")
         val rows = buildString {
-            append("<row r="1"><c r="A1" t="inlineStr"><is><t>Name</t></is></c><c r="B1" t="inlineStr"><is><t>Age</t></is></c></row>")
+            append("""<row r="1"><c r="A1" t="inlineStr"><is><t>Name</t></is></c><c r="B1" t="inlineStr"><is><t>Age</t></is></c></row>""")
             entries.forEachIndexed { index, entry ->
                 val r = index + 2
-                append("<row r="$r"><c r="A$r" t="inlineStr"><is><t xml:space="preserve">${xml(entry.name)}</t></is></c><c r="B$r" t="inlineStr"><is><t>${xml(entry.age)}</t></is></c></row>")
+                append("""<row r="$r"><c r="A$r" t="inlineStr"><is><t xml:space="preserve">${xml(entry.name)}</t></is></c><c r="B$r" t="inlineStr"><is><t>${xml(entry.age)}</t></is></c></row>""")
             }
         }
         file("xl/worksheets/sheet1.xml", """<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>$rows</sheetData></worksheet>""")
