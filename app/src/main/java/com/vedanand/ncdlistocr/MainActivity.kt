@@ -1,7 +1,5 @@
 package com.vedanand.ncdlistocr
 
-import android.content.ClipData
-import android.content.ClipboardManager
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
@@ -13,7 +11,6 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
@@ -27,10 +24,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -81,6 +75,8 @@ data class OcrCell(
     val lineIndex: Int
 )
 
+enum class SelectMode { NAME, AGE }
+
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -93,24 +89,28 @@ fun TerminalApp() {
     val context = LocalContext.current
     var bitmap by remember { mutableStateOf<Bitmap?>(null) }
     var cells by remember { mutableStateOf<List<OcrCell>>(emptyList()) }
-    var selected by remember { mutableStateOf(setOf<Pair<Int, Int>>()) }
+    var mode by remember { mutableStateOf(SelectMode.NAME) }
+    var nameCol by remember { mutableStateOf<List<OcrCell>>(emptyList()) }
+    var ageCol by remember { mutableStateOf<List<OcrCell>>(emptyList()) }
     var entries by remember { mutableStateOf(listOf<Entry>()) }
     var status by remember { mutableStateOf("$ SYSTEM READY") }
     var loading by remember { mutableStateOf(false) }
     var editingIndex by remember { mutableStateOf<Int?>(null) }
     var photoUri by remember { mutableStateOf<Uri?>(null) }
 
+    fun resetSelection() { nameCol = emptyList(); ageCol = emptyList(); mode = SelectMode.NAME }
+
     // --- Gallery picker ---
     val galleryPicker = rememberLauncherForActivityResult(
         ActivityResultContracts.PickVisualMedia()
-    ) { uri -> if (uri != null) processUri(context, uri) { b, c -> bitmap = b; cells = c; selected = emptySet() } }
+    ) { uri -> if (uri != null) processUri(context, uri) { b, c -> bitmap = b; cells = c; resetSelection() } }
 
     // --- Camera capture ---
     val cameraLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.TakePicture()
     ) { ok ->
         val u = photoUri
-        if (ok && u != null) processUri(context, u) { b, c -> bitmap = b; cells = c; selected = emptySet() }
+        if (ok && u != null) processUri(context, u) { b, c -> bitmap = b; cells = c; resetSelection() }
     }
     fun launchCamera() {
         val dir = File(context.cacheDir, "images").apply { mkdirs() }
@@ -155,9 +155,8 @@ fun TerminalApp() {
     ) {
         Surface(Modifier.fillMaxSize(), color = TERM_BG) {
             Column(Modifier.fillMaxSize().padding(12.dp)) {
-                // Header
                 Text(
-                    "> NCD_LIST_OCR v2.0_",
+                    "> NCD_LIST_OCR v2.1_",
                     color = TERM_TEAL, fontFamily = FontFamily.Monospace,
                     fontWeight = FontWeight.Bold, fontSize = 18.sp
                 )
@@ -168,7 +167,6 @@ fun TerminalApp() {
                 )
                 Spacer(Modifier.height(8.dp))
 
-                // Source buttons
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     TermButton("CAMERA", Modifier.weight(1f)) { launchCamera() }
                     TermButton("GALLERY", Modifier.weight(1f)) {
@@ -180,7 +178,6 @@ fun TerminalApp() {
                 }
                 Spacer(Modifier.height(8.dp))
 
-                // Photo + cell overlay
                 val bmp = bitmap
                 Box(
                     Modifier
@@ -214,44 +211,60 @@ fun TerminalApp() {
                         val offX = (boxSize.width - bmp.width * scale) / 2f
                         val offY = (boxSize.height - bmp.height * scale) / 2f
 
-                        // Cell overlay (Google Lens style)
+                        // Column-select overlay (Google Lens style)
                         Canvas(
                             Modifier
                                 .fillMaxSize()
                                 .pointerInput(cells, scale, offX, offY) {
                                     detectTapGestures { tap ->
-                                        cells.forEach { cell ->
+                                        var hit: OcrCell? = null
+                                        for (cell in cells) {
                                             val r = Rect(
                                                 (cell.rect.left * scale + offX).toInt(),
                                                 (cell.rect.top * scale + offY).toInt(),
                                                 (cell.rect.right * scale + offX).toInt(),
                                                 (cell.rect.bottom * scale + offY).toInt()
                                             )
-                                            if (r.contains(tap.x.toInt(), tap.y.toInt())) {
-                                                val key = cell.blockIndex to cell.lineIndex
-                                                selected = if (key in selected) selected - key else selected + key
-                                                return@detectTapGestures
-                                            }
+                                            if (r.contains(tap.x.toInt(), tap.y.toInt())) { hit = cell; break }
+                                        }
+                                        val tapped = hit ?: return@detectTapGestures
+                                        // select the whole COLUMN: every cell horizontally overlapping the tapped one
+                                        val col = cells.filter { c ->
+                                            val overlap = minOf(c.rect.right, tapped.rect.right) -
+                                                    maxOf(c.rect.left, tapped.rect.left)
+                                            overlap > 0.4f * minOf(
+                                                c.rect.width().toFloat(),
+                                                tapped.rect.width().toFloat()
+                                            )
+                                        }.sortedBy { it.rect.top }
+                                        if (mode == SelectMode.NAME) {
+                                            nameCol = col
+                                            mode = SelectMode.AGE
+                                            status = "$ NAME COLUMN: " + col.size + " ROWS - ab AGE column tap karo"
+                                        } else {
+                                            ageCol = col
+                                            status = "$ AGE COLUMN: " + col.size + " ROWS - PAIR & ADD dabao"
                                         }
                                     }
                                 }
                         ) {
                             cells.forEach { cell ->
-                                val key = cell.blockIndex to cell.lineIndex
-                                val r = Rect(
-                                    (cell.rect.left * scale + offX).toInt(),
-                                    (cell.rect.top * scale + offY).toInt(),
-                                    (cell.rect.right * scale + offX).toInt(),
-                                    (cell.rect.bottom * scale + offY).toInt()
-                                )
                                 val rectF = androidx.compose.ui.geometry.Rect(
-                                    r.left.toFloat(), r.top.toFloat(), r.right.toFloat(), r.bottom.toFloat()
+                                    cell.rect.left * scale + offX,
+                                    cell.rect.top * scale + offY,
+                                    cell.rect.right * scale + offX,
+                                    cell.rect.bottom * scale + offY
                                 )
-                                if (key in selected) {
-                                    drawRect(TERM_TEAL.copy(alpha = 0.35f), rectF)
-                                    drawRect(TERM_TEAL, rectF, style = Stroke(width = 4f))
-                                } else {
-                                    drawRect(TERM_BLUE.copy(alpha = 0.25f), rectF, style = Stroke(width = 2f))
+                                when (cell) {
+                                    in nameCol -> {
+                                        drawRect(TERM_TEAL.copy(alpha = 0.30f), rectF)
+                                        drawRect(TERM_TEAL, rectF, style = Stroke(width = 4f))
+                                    }
+                                    in ageCol -> {
+                                        drawRect(TERM_BLUE.copy(alpha = 0.30f), rectF)
+                                        drawRect(TERM_BLUE, rectF, style = Stroke(width = 4f))
+                                    }
+                                    else -> drawRect(TERM_BLUE.copy(alpha = 0.20f), rectF, style = Stroke(width = 2f))
                                 }
                             }
                             if (loading) {
@@ -268,29 +281,36 @@ fun TerminalApp() {
 
                 Spacer(Modifier.height(8.dp))
 
-                // Action row
+                // Mode indicator + actions
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    TermButton(
+                        if (mode == SelectMode.NAME) "1:NAME COL <" else "1:NAME COL (" + nameCol.size + ")",
+                        Modifier.weight(1f), color = TERM_TEAL, enabled = cells.isNotEmpty() && !loading
+                    ) { mode = SelectMode.NAME; status = "$ TAP any cell in NAME column" }
+                    TermButton(
+                        if (mode == SelectMode.AGE) "2:AGE COL <" else "2:AGE COL (" + ageCol.size + ")",
+                        Modifier.weight(1f), color = TERM_BLUE, enabled = cells.isNotEmpty() && !loading
+                    ) { mode = SelectMode.AGE; status = "$ TAP any cell in AGE column" }
+                }
+                Spacer(Modifier.height(4.dp))
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    TermButton("PAIR & ADD", Modifier.weight(1f), enabled = nameCol.isNotEmpty() && ageCol.isNotEmpty()) {
+                        val pairs = pairColumns(nameCol, ageCol)
+                        entries = entries + pairs
+                        status = "$ ADDED " + pairs.size + " PAIRS"
+                    }
                     TermButton("AUTO PARSE", Modifier.weight(1f), enabled = cells.isNotEmpty() && !loading) {
                         entries = cells.map { parseCell(it.text) }.filter { it.name.isNotBlank() }
                         status = "$ PARSED " + entries.size + " ENTRIES"
                     }
-                    TermButton("ADD SELECTED (" + selected.size + ")", Modifier.weight(1f), enabled = selected.isNotEmpty() && !loading) {
-                        val picked = cells.filter { (it.blockIndex to it.lineIndex) in selected }
-                        val newOnes = picked.map { parseCell(it.text) }.filter { it.name.isNotBlank() }
-                        entries = entries + newOnes
-                        selected = emptySet()
-                        status = "$ ADDED " + newOnes.size + " ENTRIES"
-                    }
                 }
                 Spacer(Modifier.height(8.dp))
 
-                // List header
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                     Text("NAME", color = TERM_TEAL, fontFamily = FontFamily.Monospace, fontSize = 12.sp, fontWeight = FontWeight.Bold)
                     Text("AGE", color = TERM_TEAL, fontFamily = FontFamily.Monospace, fontSize = 12.sp, fontWeight = FontWeight.Bold)
                 }
 
-                // Editable list
                 LazyColumn(Modifier.weight(1f)) {
                     items(entries.size) { i ->
                         val e = entries[i]
@@ -336,7 +356,6 @@ fun TerminalApp() {
                 )
             }
 
-            // Edit dialog
             editingIndex?.let { idx ->
                 if (idx < entries.size) {
                     val e = entries[idx]
@@ -431,8 +450,31 @@ private fun processUri(context: Context, uri: Uri, onDone: (Bitmap?, List<OcrCel
 }
 
 /**
+ * Pair NAME column cells with AGE column cells by vertical (row) alignment.
+ * Each name gets the age whose vertical center is nearest and not already used.
+ */
+fun pairColumns(nameCol: List<OcrCell>, ageCol: List<OcrCell>): List<Entry> {
+    val names = nameCol.sortedBy { it.rect.top }
+    val ages = ageCol.sortedBy { it.rect.top }.toMutableList()
+    val used = mutableSetOf<Int>()
+    return names.mapNotNull { n ->
+        val nCenter = (n.rect.top + n.rect.bottom) / 2f
+        var bestIdx = -1
+        var bestDist = Float.MAX_VALUE
+        ages.forEachIndexed { ai, a ->
+            if (ai in used) return@forEachIndexed
+            val aCenter = (a.rect.top + a.rect.bottom) / 2f
+            val d = Math.abs(aCenter - nCenter)
+            if (d < bestDist) { bestDist = d; bestIdx = ai }
+        }
+        if (bestIdx < 0) return@mapNotNull null
+        used.add(bestIdx)
+        parseCell(n.text).copy(age = parseCell(ages[bestIdx].text).age)
+    }.filter { it.name.isNotBlank() }
+}
+
+/**
  * Parse one OCR line/cell into Entry(name, age).
- * "jaydevi          33   F"  ->  Entry("jaydevi", "33")
  */
 fun parseCell(raw: String): Entry {
     var text = raw.replace("|", " ").trim()
@@ -448,8 +490,7 @@ fun parseCell(raw: String): Entry {
 }
 
 /**
- * CSV import: header-aware. Finds "name" and "age" columns; falls back to
- * first text column = name, first numeric column = age.
+ * CSV import: header-aware.
  */
 fun parseCsv(raw: String): List<Entry> {
     val lines = raw.lines().filter { it.isNotBlank() }
