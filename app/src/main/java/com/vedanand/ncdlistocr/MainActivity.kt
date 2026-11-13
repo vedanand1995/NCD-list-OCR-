@@ -30,6 +30,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
@@ -260,22 +261,28 @@ fun TerminalApp() {
                                 }
                         ) {
                             cells.forEach { cell ->
-                                val rectF = androidx.compose.ui.geometry.Rect(
+                                val topLeft = Offset(
                                     cell.rect.left * scale + offX,
-                                    cell.rect.top * scale + offY,
-                                    cell.rect.right * scale + offX,
-                                    cell.rect.bottom * scale + offY
+                                    cell.rect.top * scale + offY
                                 )
-                                when (cell) {
-                                    in nameCol -> {
-                                        drawRect(TERM_TEAL.copy(alpha = 0.30f), rectF)
-                                        drawRect(TERM_TEAL, rectF, style = Stroke(width = 4f))
-                                    }
-                                    in ageCol -> {
-                                        drawRect(TERM_BLUE.copy(alpha = 0.30f), rectF)
-                                        drawRect(TERM_BLUE, rectF, style = Stroke(width = 4f))
-                                    }
-                                    else -> drawRect(TERM_BLUE.copy(alpha = 0.20f), rectF, style = Stroke(width = 2f))
+                                val sz = Size(
+                                    cell.rect.width() * scale,
+                                    cell.rect.height() * scale
+                                )
+                                val isName = nameCol.any {
+                                    it.blockIndex == cell.blockIndex && it.lineIndex == cell.lineIndex
+                                }
+                                val isAge = ageCol.any {
+                                    it.blockIndex == cell.blockIndex && it.lineIndex == cell.lineIndex
+                                }
+                                if (isName) {
+                                    drawRect(TERM_TEAL.copy(alpha = 0.30f), topLeft, sz)
+                                    drawRect(TERM_TEAL, topLeft, sz, style = Stroke(width = 4f))
+                                } else if (isAge) {
+                                    drawRect(TERM_BLUE.copy(alpha = 0.30f), topLeft, sz)
+                                    drawRect(TERM_BLUE, topLeft, sz, style = Stroke(width = 4f))
+                                } else {
+                                    drawRect(TERM_BLUE.copy(alpha = 0.20f), topLeft, sz, style = Stroke(width = 2f))
                                 }
                             }
                             if (loading) {
@@ -283,7 +290,8 @@ fun TerminalApp() {
                                 drawLine(TERM_TEAL, Offset(0f, y), Offset(size.width, y), strokeWidth = 6f)
                                 drawRect(
                                     TERM_TEAL.copy(alpha = 0.08f),
-                                    androidx.compose.ui.geometry.Rect(0f, 0f, size.width, y)
+                                    Offset.Zero,
+                                    Size(size.width, y)
                                 )
                             }
                         }
