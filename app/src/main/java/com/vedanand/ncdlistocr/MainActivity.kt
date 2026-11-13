@@ -836,16 +836,71 @@ fun gridRows(cells: List<OcrCell>): List<List<OcrCell>> {
  * This runs locally on the text already recognized by ML Kit; it uses no cloud API.
  */
 fun extractEntriesFromOcr(cells: List<OcrCell>): List<Entry> {
-    return gridRows(cells).mapNotNull { row ->
-        val text = row.sortedBy { it.rect.left }.joinToString(" ") { it.text.trim() }
-            .replace(Regex("\\s+"), " ").trim()
-        if (text.isBlank()) return@mapNotNull null
-        val parsed = parseCell(text)
-        val normalized = text.lowercase(Locale.ROOT)
-        val looksLikeHeader = normalized.contains("name") && normalized.contains("age") ||
-            normalized.trim() in setOf("name", "age", "naam", "umar", "vay")
-        if (looksLikeHeader || parsed.name.isBlank()) null else parsed
+    if (cells.isEmpty()) return emptyList()
+    val columns = clusterColumns(cells)
+    val columnOf = mutableMapOf<Pair<Int, Int>, Int>()
+    columns.forEachIndexed { index, column ->
+        column.forEach { columnOf[it.blockIndex to it.lineIndex] = index }
     }
+    fun isNoise(text: String): Boolean {
+        val value = text.trim()
+        val lower = value.lowercase(Locale.ROOT)
+        return value.isBlank() || lower.contains("icds") ||
+            value.matches(Regex("(?i)\\s*(m|f|male|female)\\s*")) ||
+            value.replace(Regex("\\D"), "").matches(Regex("[0-9]{10}")) ||
+            lower in setOf("name", "age", "naam", "umar", "vay", "gender", "sex")
+    }
+    fun ageValue(text: String): String? {
+        val value = text.trim()
+        if (value.replace(Regex("\\D"), "").length >= 10) return null
+        val number = value.toIntOrNull() ?: return null
+        return number.takeIf { it in 1..99 }?.toString()
+    }
+
+    // Prefer the visual column containing mostly 2-digit numbers. Long phone-number
+    // columns and M/F columns are intentionally never considered age columns.
+    val ageColumn = columns.indices.maxByOrNull { index ->
+        columns[index].sumOf { cell ->
+            val value = ageValue(cell.text)
+            when {
+                value == null -> 0
+                value.length == 2 -> 3
+                else -> 1
+            }
+        }
+    }?.takeIf { index -> columns[index].count { ageValue(it.text) != null } > 0 }
+
+    // The first readable non-noise text column to the left of age is the person's
+    // name. Later name columns are typically father/husband names and are omitted.
+    val nameColumn = columns.indices.firstOrNull { index ->
+        (ageColumn == null || index < ageColumn) &&
+            columns[index].any { !isNoise(it.text) && parseCell(it.text).name.isNotBlank() }
+    } ?: columns.indices.firstOrNull { index ->
+        (ageColumn == null || index != ageColumn) &&
+            columns[index].any { !isNoise(it.text) && parseCell(it.text).name.isNotBlank() }
+    }
+
+    return gridRows(cells).mapNotNull { row ->
+        val rowByColumn = row.groupBy { columnOf[it.blockIndex to it.lineIndex] }
+        val nameText = nameColumn?.let { index ->
+            rowByColumn[index]?.sortedBy { it.rect.left }?.joinToString(" ") { it.text.trim() }
+        }.orEmpty()
+        val ageText = ageColumn?.let { index ->
+            rowByColumn[index]?.firstNotNullOfOrNull { ageValue(it.text) }
+        }
+        // If the table layout cannot be clustered reliably, use the same strict
+        // filtering on the row itself as a fallback.
+        val candidateText = if (nameText.isNotBlank()) nameText else row.sortedBy { it.rect.left }
+            .filterNot { isNoise(it.text) || ageValue(it.text) != null }
+            .joinToString(" ") { it.text.trim() }
+        val age = ageText ?: row.mapNotNull { ageValue(it.text) }
+            .firstOrNull { it.length == 2 } ?: row.mapNotNull { ageValue(it.text) }.firstOrNull()
+        val name = parseCell(candidateText).name
+        val normalized = candidateText.lowercase(Locale.ROOT)
+        val isHeader = normalized.contains("name") && normalized.contains("age") ||
+            normalized.trim() in setOf("name", "age", "naam", "umar", "vay")
+        if (isHeader || name.isBlank() || age == null) null else Entry(name, age)
+    }.distinctBy { (it.name.lowercase(Locale.ROOT) to it.age) }
 }
 
 /** Cluster OCR cells into visual columns (sorted left to right). */
