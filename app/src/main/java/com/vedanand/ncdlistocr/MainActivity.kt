@@ -53,6 +53,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.core.content.FileProvider
 import androidx.exifinterface.media.ExifInterface
 import com.google.mlkit.vision.common.InputImage
@@ -63,6 +65,8 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.zip.ZipInputStream
+import java.util.zip.ZipEntry
+import java.util.zip.ZipOutputStream
 
 // ---------- Terminal theme ----------
 val TERM_BG = Color(0xFF000000)
@@ -107,6 +111,7 @@ fun TerminalApp() {
     var cropStart by remember { mutableStateOf<Offset?>(null) }
     var cropEnd by remember { mutableStateOf<Offset?>(null) }
     var showGrid by remember { mutableStateOf(false) }
+    var tableScreen by remember { mutableStateOf(false) }
 
     fun resetForNewImage() { selected = emptySet(); entries = emptyList(); cropMode = false; showGrid = false }
 
@@ -160,6 +165,20 @@ fun TerminalApp() {
         val uri = FileProvider.getUriForFile(context, context.packageName + ".fileprovider", file)
         photoUri = uri
         cameraLauncher.launch(uri)
+    }
+
+    // --- Export the reviewed list as an Excel workbook ---
+    val xlsxSaver = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    ) { uri ->
+        if (uri != null) {
+            try {
+                writeEntriesAsXlsx(context, uri, entries)
+                status = "$ EXCEL EXPORTED: " + entries.size + " ROWS"
+            } catch (e: Exception) {
+                status = "$ EXCEL EXPORT FAILED: " + (e.message ?: "")
+            }
+        }
     }
 
     // --- Excel / CSV file import ---
@@ -241,7 +260,7 @@ fun TerminalApp() {
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
-                        "> NCD_LIST_OCR v2.5_",
+                        "> NCD_LIST_OCR v2.6_",
                         color = TERM_TEAL, fontFamily = FontFamily.Monospace,
                         fontWeight = FontWeight.Bold, fontSize = 15.sp
                     )
@@ -280,6 +299,17 @@ fun TerminalApp() {
                         status = if (cropMode) "$ CROP: photo par drag karo" else "$ CROP CANCELLED"
                     }
                     TermButton("AUTOCROP", Modifier.weight(1f), fontSize = 10.sp, enabled = bitmap != null && !loading) { autoCrop() }
+                }
+                if (showGrid && cells.isNotEmpty()) {
+                    Spacer(Modifier.height(4.dp))
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+                        TermButton("TABLE VIEW", Modifier.weight(1f), fontSize = 10.sp) {
+                            tableScreen = true
+                        }
+                        TermButton("EXPORT XLSX", Modifier.weight(1f), fontSize = 10.sp, enabled = entries.isNotEmpty()) {
+                            xlsxSaver.launch("NCD-List-${SimpleDateFormat("yyyyMMdd_HHmm", Locale.US).format(Date())}.xlsx")
+                        }
+                    }
                 }
                 Spacer(Modifier.height(6.dp))
 
@@ -588,6 +618,57 @@ fun TerminalApp() {
                 }
             }
 
+            if (tableScreen) {
+                Dialog(
+                    onDismissRequest = { tableScreen = false },
+                    properties = DialogProperties(usePlatformDefaultWidth = false)
+                ) {
+                    Surface(Modifier.fillMaxSize(), color = TERM_BG) {
+                        Column(Modifier.fillMaxSize().padding(12.dp)) {
+                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                                Text("EXCEL TABLE", color = TERM_TEAL, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold)
+                                TermButton("BACK", fontSize = 10.sp) { tableScreen = false }
+                            }
+                            Text("Tap any value to copy that cell", color = TERM_TEAL.copy(alpha = 0.65f), fontFamily = FontFamily.Monospace, fontSize = 10.sp)
+                            Spacer(Modifier.height(8.dp))
+                            Row(Modifier.fillMaxWidth().background(TERM_DIM).padding(8.dp)) {
+                                Text("NAME", Modifier.weight(1f), color = TERM_TEAL, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold)
+                                Text("AGE", Modifier.width(72.dp), color = TERM_TEAL, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold)
+                            }
+                            if (entries.isEmpty()) {
+                                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                                    Text("First select OCR cells and use PAIR & ADD or AUTO PARSE.", color = TERM_TEXT, fontFamily = FontFamily.Monospace)
+                                }
+                            } else {
+                                LazyColumn(Modifier.weight(1f).fillMaxWidth()) {
+                                    items(entries.size) { i ->
+                                        val row = entries[i]
+                                        Row(Modifier.fillMaxWidth().padding(vertical = 2.dp).background(TERM_PANEL).padding(8.dp)) {
+                                            Text(row.name, Modifier.weight(1f).clickable {
+                                                clipboard.setText(AnnotatedString(row.name)); status = "$ COPIED NAME CELL"
+                                            }, color = TERM_TEXT, fontFamily = FontFamily.Monospace)
+                                            Text(row.age, Modifier.width(72.dp).clickable {
+                                                clipboard.setText(AnnotatedString(row.age)); status = "$ COPIED AGE CELL"
+                                            }, color = TERM_BLUE, fontFamily = FontFamily.Monospace)
+                                        }
+                                    }
+                                }
+                                Spacer(Modifier.height(8.dp))
+                                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    TermButton("COPY ALL", Modifier.weight(1f), fontSize = 10.sp) {
+                                        val text = entries.joinToString("\n") { "${it.name}\t${it.age}" }
+                                        clipboard.setText(AnnotatedString(text)); status = "$ COPIED TABLE"
+                                    }
+                                    TermButton("EXPORT XLSX", Modifier.weight(1f), fontSize = 10.sp) {
+                                        xlsxSaver.launch("NCD-List-${SimpleDateFormat("yyyyMMdd_HHmm", Locale.US).format(Date())}.xlsx")
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
             editingIndex?.let { idx ->
                 if (idx < entries.size) {
                     val e = entries[idx]
@@ -659,6 +740,31 @@ fun TermButton(label: String, modifier: Modifier = Modifier, enabled: Boolean = 
         contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
     ) {
         Text(label, fontFamily = FontFamily.Monospace, fontSize = fontSize, fontWeight = FontWeight.Bold, maxLines = 1)
+    }
+}
+
+/** Write a minimal standards-compliant XLSX workbook with Name and Age columns. */
+fun writeEntriesAsXlsx(context: Context, uri: Uri, entries: List<Entry>) {
+    val output = context.contentResolver.openOutputStream(uri) ?: error("Cannot open destination")
+    ZipOutputStream(output).use { zip ->
+        fun file(name: String, text: String) {
+            zip.putNextEntry(ZipEntry(name))
+            zip.write(text.toByteArray(Charsets.UTF_8))
+            zip.closeEntry()
+        }
+        file("[Content_Types].xml", """<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/></Types>""")
+        file("_rels/.rels", """<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>""")
+        file("xl/workbook.xml", """<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="NCD List" sheetId="1" r:id="rId1"/></sheets></workbook>""")
+        file("xl/_rels/workbook.xml.rels", """<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/></Relationships>""")
+        fun xml(value: String) = value.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace(""", "&quot;").replace("'", "&apos;")
+        val rows = buildString {
+            append("<row r="1"><c r="A1" t="inlineStr"><is><t>Name</t></is></c><c r="B1" t="inlineStr"><is><t>Age</t></is></c></row>")
+            entries.forEachIndexed { index, entry ->
+                val r = index + 2
+                append("<row r="$r"><c r="A$r" t="inlineStr"><is><t xml:space="preserve">${xml(entry.name)}</t></is></c><c r="B$r" t="inlineStr"><is><t>${xml(entry.age)}</t></is></c></row>")
+            }
+        }
+        file("xl/worksheets/sheet1.xml", """<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>$rows</sheetData></worksheet>""")
     }
 }
 
